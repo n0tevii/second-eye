@@ -16,19 +16,26 @@ def compute_risk(
     """返回 (风险等级, 一句话理由)。只提示不拦截。"""
     rate = detail_rate if detail_rate is not None else (seller.positive_rate if seller else None)
     label = credit_label or getattr(seller, "credit_label", None) or ""
+    signals: list[tuple[int, str]] = []
+    if label:
+        if any(word in label for word in ("较差", "极差", "很差", "信用差")):
+            signals.append((3, f"信用标签：{label}"))
+        elif "极好" in label:
+            signals.append((1, f"信用标签：{label}"))
+        elif "良好" in label or label.endswith("好"):
+            signals.append((2, f"信用标签：{label}"))
+        else:
+            signals.append((3, f"信用标签：{label}"))
     if rate is not None:
         pct = rate * 100
-        if rate >= 0.98:
-            return "低", f"好评率 {pct:.0f}%"
-        if rate >= 0.90:
-            return "中", f"好评率 {pct:.0f}%"
-        return "高", f"好评率 {pct:.0f}%"
-    if label:
-        if "极好" in label:
-            return "低", label
-        if "良好" in label or label.endswith("好"):
-            return "中", label
-        return "高", label
+        severity = 1 if rate >= 0.98 else 2 if rate >= 0.90 else 3
+        signals.append((severity, f"好评率 {pct:.0f}%"))
+    if signals:
+        severity = max(level for level, _ in signals)
+        reason = "；".join(reason for _, reason in signals)
+        if len({level for level, _ in signals}) > 1:
+            reason += "；指标存在冲突，按较高风险提示"
+        return {1: "低", 2: "中", 3: "高"}[severity], reason
     if seller and seller.positive_count is not None and seller.total_count:
         pct = seller.positive_count / seller.total_count * 100
         if pct >= 98:
@@ -85,7 +92,9 @@ class SellerService:
         try:
             data = self.adapter.fetch_seller(seller_uid)
         except Exception as exc:
-            logger.warning("卖家 %s 数据抓取失败: %s", seller_uid, exc)
+            from goodprice.security import redact_secrets
+
+            logger.warning("卖家 %s 数据抓取失败: %s", seller_uid, redact_secrets(exc))
             return seller
         if seller is None:
             seller = Seller(platform=platform, seller_uid=seller_uid)

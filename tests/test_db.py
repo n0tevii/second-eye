@@ -50,12 +50,27 @@ def test_migrate_adds_block_columns(tmp_db):
 def test_migrate_adds_notification_columns(tmp_db):
     engine = create_engine(tmp_db)
     with engine.begin() as conn:
-        conn.execute(text("CREATE TABLE notifications (id INTEGER PRIMARY KEY)"))
+        conn.execute(
+            text(
+                "CREATE TABLE notifications ("
+                "id INTEGER PRIMARY KEY, channel TEXT, status TEXT)"
+            )
+        )
+        conn.execute(
+            text("INSERT INTO notifications (id, channel, status) VALUES (1, 'log', 'sent')")
+        )
+        conn.execute(
+            text("INSERT INTO notifications (id, channel, status) VALUES (2, 'serverchan', 'sent')")
+        )
     factory = make_session_factory(tmp_db)
     migrate_schema(factory)
     with factory() as session:
         cols = {r[1] for r in session.execute(text("PRAGMA table_info(notifications)"))}
-    assert {"title", "content"} <= cols
+        statuses = session.execute(
+            text("SELECT channel, status FROM notifications ORDER BY id")
+        ).all()
+    assert {"title", "content", "event_key", "attempt"} <= cols
+    assert statuses == [("log", "logged"), ("serverchan", "accepted")]
 
 
 def test_migrate_adds_round7_columns(tmp_db):

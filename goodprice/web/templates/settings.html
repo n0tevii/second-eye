@@ -12,12 +12,12 @@
 <form method="post" action="/settings" class="bg-white rounded shadow p-4 max-w-2xl mx-auto space-y-4">
   <div>
     <label class="block text-sm font-medium mb-1">闲鱼 Cookie</label>
-    <textarea name="xianyu_cookie" rows="4" class="w-full border rounded px-3 py-2 font-mono text-xs">{{ settings.xianyu_cookie }}</textarea>
-    <p class="text-xs text-gray-500 mt-1">也可以手动登录 https://www.goofish.com 后，从浏览器开发者工具复制 Cookie 粘贴到这里。</p>
+    <textarea name="xianyu_cookie" rows="4" class="w-full border rounded px-3 py-2 font-mono text-xs" autocomplete="off" placeholder="{{ '已配置（留空保持不变）' if configured.xianyu_cookie else '尚未配置' }}"></textarea>
+    <p class="text-xs text-gray-500 mt-1">不会回显已保存的 Cookie。也可以在受保护的登录窗口完成登录。</p>
   </div>
   <div class="grid grid-cols-2 gap-3">
     <div><label class="block text-sm font-medium mb-1">LLM Base URL</label>
-      <input name="llm_base_url" class="w-full border rounded px-3 py-2" value="{{ settings.llm_base_url }}" placeholder="如 https://dashscope.aliyuncs.com/compatible-mode/v1"></div>
+      <input name="llm_base_url" class="w-full border rounded px-3 py-2" value="" autocomplete="off" placeholder="{{ '已配置（留空保持不变）' if configured.llm_base_url else '如 https://dashscope.aliyuncs.com/compatible-mode/v1' }}"></div>
     <div><label class="block text-sm font-medium mb-1">LLM API Key</label>
       <input name="llm_api_key" type="password" class="w-full border rounded px-3 py-2" value="" placeholder="已配置（留空保持不变）"></div>
       <div><label class="block text-sm font-medium mb-1">LLM 模型</label>
@@ -35,7 +35,7 @@
     <label class="flex items-center gap-2 mb-3"><input type="checkbox" name="vision_enabled" value="1" {{ 'checked' if settings.vision_enabled }}> 启用视觉品相分析（关闭后满足评分按需求+卖家计算）</label>
     <div class="grid grid-cols-2 gap-3">
       <div><label class="block text-sm font-medium mb-1">Vision Base URL</label>
-        <input name="vision_base_url" class="w-full border rounded px-3 py-2" value="{{ settings.vision_base_url }}" placeholder="如 https://dashscope.aliyuncs.com/compatible-mode/v1"></div>
+        <input name="vision_base_url" class="w-full border rounded px-3 py-2" value="" autocomplete="off" placeholder="{{ '已配置（留空保持不变）' if configured.vision_base_url else '如 https://dashscope.aliyuncs.com/compatible-mode/v1' }}"></div>
       <div><label class="block text-sm font-medium mb-1">Vision API Key</label>
         <input name="vision_api_key" type="password" class="w-full border rounded px-3 py-2" value="" placeholder="已配置（留空保持不变）"></div>
       <div><label class="block text-sm font-medium mb-1">Vision 模型</label>
@@ -76,7 +76,7 @@
     </div>
     <div class="mt-3 border-t pt-3">
       <label class="block text-sm font-medium mb-1">Gotify 地址</label>
-      <input name="gotify_url" class="w-full border rounded px-3 py-2" value="{{ settings.gotify_url }}" placeholder="http://gotify">
+      <input name="gotify_url" class="w-full border rounded px-3 py-2" value="" autocomplete="off" placeholder="{{ '已配置（留空保持不变）' if configured.gotify_url else 'https://gotify.example' }}">
     </div>
     <div class="mt-3">
       <label class="block text-sm font-medium mb-1">Gotify 应用 Token</label>
@@ -89,7 +89,7 @@
   </div>
   <div class="grid grid-cols-2 gap-3">
     <div><label class="block text-sm font-medium mb-1">代理（可选）</label>
-      <input name="proxy" class="w-full border rounded px-3 py-2" value="{{ settings.proxy }}" placeholder="http://127.0.0.1:7890"></div>
+      <input name="proxy" class="w-full border rounded px-3 py-2" value="" autocomplete="off" placeholder="{{ '已配置（留空保持不变）' if configured.proxy else 'http://127.0.0.1:7890' }}"></div>
     <div><label class="block text-sm font-medium mb-1">默认间隔（分钟）</label>
       <input name="default_crawl_interval_minutes" type="number" min="1" class="w-full border rounded px-3 py-2" value="{{ settings.default_crawl_interval_minutes }}"></div>
     <div><label class="block text-sm font-medium mb-1">随机抖动（分钟）</label>

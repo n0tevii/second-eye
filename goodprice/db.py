@@ -110,6 +110,8 @@ def migrate_schema(session_factory) -> None:
         "notifications": [
             ("title", "title TEXT"),
             ("content", "content TEXT"),
+            ("event_key", "event_key VARCHAR(64) DEFAULT ''"),
+            ("attempt", "attempt INTEGER DEFAULT 1"),
         ],
     }
     with session_factory() as session:
@@ -128,6 +130,18 @@ def migrate_schema(session_factory) -> None:
                     session.execute(text(f"ALTER TABLE {table} ADD COLUMN {ddl}"))
         if "listings" in existing_tables and _listing_unique_columns(session) != _NEW_LISTING_UNIQUE:
             _rebuild_listings(session)
+        if "listings" in existing_tables:
+            session.execute(
+                text("UPDATE listings SET status='not_seen_recently' WHERE status='gone'")
+            )
+        if "notifications" in existing_tables:
+            session.execute(
+                text(
+                    "UPDATE notifications "
+                    "SET status=CASE WHEN channel='log' THEN 'logged' ELSE 'accepted' END "
+                    "WHERE status='sent'"
+                )
+            )
         session.commit()
 
 

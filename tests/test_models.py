@@ -45,7 +45,7 @@ def test_listing_relations(session_factory):
         session.add(listing)
         session.flush()
         session.add(PriceSnapshot(listing_id=listing.id, price=9.9))
-        session.add(Notification(listing_id=listing.id, channel="log", status="sent"))
+        session.add(Notification(listing_id=listing.id, channel="log", status="logged"))
         session.commit()
         session.refresh(listing)
         assert len(listing.snapshots) == 1

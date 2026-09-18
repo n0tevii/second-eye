@@ -8,14 +8,14 @@ from goodprice.crawler import selectors as sel
 from goodprice.crawler.base import ListingData, ListingDetail, SellerData
 
 BASE_URL = "https://www.goofish.com"
-_PRICE_RE = re.compile(r"(\d+(?:\.\d+)?)")
+_PRICE_RE = re.compile(r"(\d+(?:[,_，]\d{3})*(?:\.\d+)?)")
 
 
 def parse_price(text: str) -> float:
     match = _PRICE_RE.search(text or "")
     if not match:
         raise ValueError(f"无法解析价格: {text!r}")
-    return float(match.group(1))
+    return float(match.group(1).replace(",", "").replace("_", "").replace("，", ""))
 
 
 def extract_id(href: str) -> Optional[str]:

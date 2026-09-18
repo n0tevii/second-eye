@@ -6,7 +6,7 @@
 盯住闲鱼上你感兴趣的关键词：价格符合预期、品相达标、性价比高的商品会自动收录，并推送到你的微信或企业微信。
 AI 品相筛选、卖家信用、降价重推、本地开源——一个面向中文二手市场的个人盯价工具。
 
-> 本地单进程应用：FastAPI + SQLite + Playwright + LLM，一条命令启动，数据和 Cookie 只存在你自己电脑上。
+> 本地单进程应用：FastAPI + SQLite + Playwright + LLM。Cookie 与运行数据保存在本地；启用模型分析时，商品文字和图片 URL 会发送给所配置的模型服务。
 
 ## 功能
 
@@ -16,18 +16,20 @@ AI 品相筛选、卖家信用、降价重推、本地开源——一个面向�
 - **三阶段 AI 筛选**：需求匹配（文本）→ 品相分析（看图，1-10 分）→ 本批横向性价比对比，标出「本批最优」
 - **降价重推**：价格变化触发重评，满意度提高才再次推送并标明「价格更新重推」，无变化不打扰
 - **卖家信用**：好评率、卖出件数、信用等级与评价标签（7 天缓存），风险分级随通知提示，只提示不拦截
-- **消息通知**：Server酱、企业微信群机器人、飞书机器人与 Gotify，可独立开关；站内可查全部推送记录
-- **本地安全**：一键登录抓 Cookie（免 F12，不保存密码），数据与 Cookie 只存本地 SQLite
+- **消息通知**：Server酱、企业微信群机器人、飞书机器人与 Gotify，可独立开关；按商品事件和渠道记录失败、有限重试及服务端接受状态
+- **访问保护**：全部管理页面和 API 使用管理账号保护，拒绝跨站写请求；Cookie、代理与密钥不会在设置页回显
 
 **细节能力**
 
 - 价格下限 + 排除词过滤超低价配件噪音；同名任务互不干扰（商品按 任务id + 外部id 去重）
 - 串行任务队列：同一时刻只跑一个任务，任务间间隔 5 分钟，运行超时后自动补跑
-- 更新重评估、多规格价格区间、连续 3 轮未见标记「已下架」
+- 更新重评估、多规格价格区间、连续 3 轮未见标记「近期未检索到」（不等同于已下架）
 - 任务/商品详情页：改参数、看运行统计、价格走势、通知历史，支持手动「重新分析」
 - 命中列表排序/筛选/加载更多、商品与卖家拉黑、控制台分步日志
 - 评分公式：需求 40 + 品相 30 + 性价比 20 + 卖家 10（视觉关闭自动切换为 需求 50 + 性价比 30 + 卖家 20，较首见降价有加成）
 - 视觉模型可选：未配置时跳过品相分析并注明；分析失败不拦截（宁多勿漏）
+
+通知状态“服务端已接受”只表示第三方接口成功响应，不证明手机已经收到。进程在外部接受与本地状态落库之间崩溃时仍可能重发，因此不承诺严格 exactly-once。
 
 ## 快速开始
 
@@ -38,6 +40,8 @@ git clone https://github.com/Comui520/second-eye.git
 cd second-eye
 conda env create -f environment.yml
 conda run -n good-price python -m playwright install chromium
+export ADMIN_USERNAME=admin
+export ADMIN_PASSWORD='请替换为至少16位的唯一强密码'
 conda run -n good-price python -m goodprice
 ```
 
@@ -58,7 +62,7 @@ docker compose build
 docker compose up -d
 ```
 
-默认访问地址：<http://127.0.0.1:18000>。NAS 上建议只在局域网访问，或通过带认证的反向代理发布。
+应用和 noVNC 端口默认只绑定宿主机 loopback。NAS 上应由 HTTPS 反向代理转发应用端口，并保留原始 `Host` 头；应用本身仍会要求管理账号，反向代理不能留下直达后端的额外端口。
 
 构建需要访问 PyPI 和 Playwright 下载地址；网络受限时可在 `.env` 设置 `PROXY`。浏览器层会被 Docker 缓存，后续只修改源码不会重复下载浏览器。
 
@@ -77,7 +81,7 @@ docker compose up -d
 **推荐方式：一键登录（免 F12）**
 
 1. 打开本工具的「设置」页，点击「一键登录」
-2. 本地运行时会弹出浏览器窗口；Docker/NAS 运行时打开 `http://NAS_IP:16080/vnc.html` 查看虚拟浏览器
+2. 本地运行时会弹出浏览器窗口；Docker/NAS 的 noVNC 默认关闭，只在重新登录期间临时启用
 3. 像正常上网一样扫码或用账号密码登录闲鱼（密码只输入在淘宝/闲鱼官方登录页，程序不保存密码）
 4. 登录成功后程序自动抓取 Cookie 并保存；登录态保存在本地，下次可能免登录
 
@@ -90,7 +94,7 @@ docker compose up -d
 
 > Cookie 会过期，过期后工具会记录错误提示，重新登录即可。
 
-> Docker 部署的 noVNC 端口默认未设置密码，仅建议在可信局域网使用，不要暴露到公网。
+> NAS 登录时先在权限受控的 `data/.novnc-password` 写入独立强密码，再把 `ENABLE_NOVNC` 临时改为 `1` 并重建本项目。noVNC 只绑定 loopback，WebSocket 使用 VNC 密码；登录完成后恢复为 `0`。不要把该密码发到 issue、聊天或日志。
 
 ## 企业微信群机器人（推荐，免费）
 
@@ -100,15 +104,9 @@ docker compose up -d
 2. 复制机器人 Webhook 地址，填入本工具「设置」页 →「消息通知」→「群机器人 Webhook」，并确认开关已勾选
 3. 限制：每个机器人 20 条/分钟；消息发到企业微信群，手机装企业微信 App 即可收到通知
 
-## Gotify（推荐自托管）
+## Gotify（可选外部服务）
 
-Docker Compose 会同时启动 Gotify 服务，默认地址为 <http://127.0.0.1:18080>。首次登录使用 `admin` / `admin`，登录后请立即修改密码。
-
-1. 打开 Gotify Web 页面，进入 `Applications`
-2. 创建一个应用并复制 Application Token
-3. 在 second-eye「设置 → 消息通知」中填入 Gotify 地址、Token，并打开 Gotify 开关
-
-容器内部地址填写 `http://gotify`；手机或局域网浏览器访问 NAS 时使用 `http://NAS_IP:18080`。Gotify 数据保存在独立的 Docker Volume 中。
+本项目默认不启动 Gotify 容器。已有受保护的 Gotify 服务时，可在 second-eye「设置 → 消息通知」中填入其内部地址和 Application Token，并打开开关。
 
 ## 飞书机器人
 
@@ -131,15 +129,18 @@ LLM_API_FORMAT=responses
 
 - 数据来源：商品详情页卖家区块（好评率、卖出件数、信用等级）+ 卖家主页「信用及评价」标签（好评数、评价标签统计）
 - 缓存：每个卖家 7 天内只抓一次，避免频繁请求
-- 风险分级：好评率 ≥98% 或「信用极好」→ 低；≥90% → 中；否则高；数据不足 → 未知
+- 风险分级：同时保留信用标签和好评率；信号冲突时明确提示，并采用其中较高的风险等级；数据不足 → 未知
 - 策略：风险只出现在通知和页面徽标中（绿/黄/红），**不会拦截通知**
 
 ## 配置说明
 
-所有配置都可以在 Web 界面的「设置」页修改，并持久化到数据库；`.env` 中的值作为默认值。
+业务配置可在受保护的「设置」页修改并持久化到数据库；管理账号、部署版本和 noVNC 开关只从 `.env` 读取。
 
 | 配置项 | 说明 |
 | --- | --- |
+| `SECOND_EYE_VERSION` | 固定发布版本；不要使用 `latest` |
+| `ADMIN_USERNAME` / `ADMIN_PASSWORD` | 管理账号；密码至少 16 位且必须替换示例值 |
+| `ENABLE_NOVNC` / `NOVNC_PASSWORD_FILE` | noVNC 按需开关与密码文件；默认关闭 |
 | `XIANYU_COOKIE` | 闲鱼登录 Cookie（推荐用「一键登录」获取） |
 | `LLM_BASE_URL` | OpenAI 兼容服务地址，如 `https://open.bigmodel.cn/api/paas/v4`（智谱） |
 | `LLM_API_KEY` | 大模型 API Key |
@@ -177,7 +178,7 @@ conda run -n good-price pytest -v
 - `goodprice/analysis/`：OpenAI 兼容 LLM 客户端与品相/性价比提示词
 - `goodprice/notify/`：通知通道协议（日志、Server酱、企业微信群机器人、飞书、Gotify）
 - `goodprice/services/`：设置服务（env 默认值 + 数据库覆盖）、任务服务、核心爬取流水线、串行任务队列
-- `goodprice/web/`：Jinja2 + HTMX + Tailwind（CDN）页面与路由
+- `goodprice/web/`：Jinja2 + 固定版本、本地提供的 HTMX/Tailwind 页面与路由
 
 ## 合规与免责声明
 

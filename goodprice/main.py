@@ -7,11 +7,12 @@ from typing import Optional
 
 import uvicorn
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 
 from goodprice.config import Settings, get_settings
 from goodprice.db import init_db, migrate_schema
-from goodprice.scheduler import build_scheduler
 from goodprice.scheduler import _sync_tasks, build_scheduler
+from goodprice.security import AdminSecurityMiddleware, redact_secrets
 from goodprice.services.crawl_service import CrawlService, TaskRunGuard
 from goodprice.services.seller_service import SellerService
 from goodprice.services.settings_service import SettingsService
@@ -124,6 +125,12 @@ def build_app(
     with_scheduler: bool = True,
 ) -> FastAPI:
     settings = settings or get_settings()
+    if (
+        not settings.admin_username
+        or len(settings.admin_password) < 16
+        or settings.admin_password == "replace-with-a-long-unique-password"
+    ):
+        raise RuntimeError("ADMIN_USERNAME 和至少 16 位的唯一 ADMIN_PASSWORD 必须配置后才能启动")
     if session_factory is None:
         init_db(settings.database_url)
         from goodprice.db import make_session_factory
@@ -148,15 +155,15 @@ def build_app(
         try:
             stats = _make_crawl_service(session_factory, settings_service, guard).run_task(task_id)
             logger.info("任务 %s 执行完成: %s", task_id, stats)
-        except Exception:
-            logger.exception("任务 %s 执行失败", task_id)
+        except Exception as exc:
+            logger.error("任务 %s 执行失败: %s", task_id, redact_secrets(exc))
 
     def run_reanalyze(listing_id: int) -> None:
         logger.info("重新分析商品 %s", listing_id)
         try:
             _make_crawl_service(session_factory, settings_service, guard).reanalyze_listing(listing_id)
-        except Exception:
-            logger.exception("重新分析商品 %s 失败", listing_id)
+        except Exception as exc:
+            logger.error("重新分析商品 %s 失败: %s", listing_id, redact_secrets(exc))
 
     task_queue = TaskQueue(run_job, gap_seconds=DEFAULT_GAP_SECONDS)
     scheduler = (
@@ -181,6 +188,16 @@ def build_app(
         task_queue.stop()
 
     app = FastAPI(title=settings.app_name, lifespan=lifespan)
+    app.add_middleware(
+        AdminSecurityMiddleware,
+        username=settings.admin_username,
+        password=settings.admin_password,
+    )
+    app.mount(
+        "/static",
+        StaticFiles(directory=str(Path(__file__).parent / "web" / "static")),
+        name="static",
+    )
     app.state.session_factory = session_factory
     app.state.settings_service = settings_service
     app.state.task_service = task_service
@@ -190,12 +207,15 @@ def build_app(
     app.state.sync_scheduler = sync_scheduler
     app.state.task_queue = task_queue
     app.state.login_session = login_session
+    app.state.app_version = settings.app_version
+
+    @app.get("/healthz", include_in_schema=False)
+    def healthz():
+        return {"status": "ok", "version": settings.app_version}
+
     app.include_router(router)
     return app
 
 
-app = build_app()
-
-
 def main() -> None:
-    uvicorn.run("goodprice.main:app", host="0.0.0.0", port=8000, reload=False)
+    uvicorn.run(build_app(), host="0.0.0.0", port=8000, reload=False)

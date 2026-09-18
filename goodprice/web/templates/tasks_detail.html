@@ -73,7 +73,7 @@
     <li class="py-2 flex items-center gap-3 text-sm">
       <a href="/listings/{{ item.id }}" class="flex-1 truncate hover:text-blue-600">{{ item.title }}</a>
       <span class="text-red-600 font-medium">¥{{ item.price }}</span>
-      {% if item.status == 'gone' %}<span class="px-1.5 py-0.5 rounded text-xs bg-gray-300 text-gray-700">已下架</span>{% endif %}
+      {% if item.status == 'not_seen_recently' %}<span class="px-1.5 py-0.5 rounded text-xs bg-gray-300 text-gray-700">近期未检索到</span>{% endif %}
       <span class="px-1.5 py-0.5 rounded text-xs bg-purple-100 text-purple-700">分 {{ item.satisfaction|round(1) }}</span>
     </li>
     {% else %}

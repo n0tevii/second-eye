@@ -128,8 +128,11 @@ class LoginSession:
                     except Exception:
                         pass
         except Exception as exc:
-            logger.exception("闲鱼一键登录失败")
-            self._set_status("error", f"登录失败：{exc}"[:200])
+            from goodprice.security import redact_secrets
+
+            detail = redact_secrets(exc)
+            logger.error("闲鱼一键登录失败: %s", detail)
+            self._set_status("error", f"登录失败：{detail}"[:200])
 
     def _clear_profile_locks(self) -> None:
         """清理容器重启后残留的 Chromium Profile 锁。"""

@@ -112,7 +112,9 @@ class Notification(Base):
         ForeignKey("watch_tasks.id", ondelete="SET NULL"), nullable=True
     )
     channel: Mapped[str] = mapped_column(String(50), default="log")
-    status: Mapped[str] = mapped_column(String(20), default="sent")
+    status: Mapped[str] = mapped_column(String(20), default="pending")
+    event_key: Mapped[str] = mapped_column(String(64), default="")
+    attempt: Mapped[int] = mapped_column(Integer, default=1)
     detail: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     title: Mapped[str] = mapped_column(String(500), default="")
     content: Mapped[str] = mapped_column(Text, default="")

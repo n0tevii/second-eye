@@ -10,7 +10,7 @@
     <h2 class="text-lg font-semibold">{{ listing.title }}</h2>
     <div class="mt-2 flex items-center gap-2 flex-wrap">
       <span class="text-2xl font-bold text-red-600">¥{{ listing.price }}</span>
-      {% if listing.status == 'gone' %}<span class="px-2 py-0.5 rounded text-xs bg-gray-300 text-gray-700">已下架</span>{% endif %}
+      {% if listing.status == 'not_seen_recently' %}<span class="px-2 py-0.5 rounded text-xs bg-gray-300 text-gray-700">近期未检索到</span>{% endif %}
       {% if listing.best_of_batch %}<span class="px-2 py-0.5 rounded text-xs bg-amber-100 text-amber-700">本批最优</span>{% endif %}
       {% if notify_count > 1 %}<span class="px-2 py-0.5 rounded text-xs bg-indigo-100 text-indigo-700">已重推</span>{% endif %}
       {% if listing.blocked %}<span class="px-2 py-0.5 rounded text-xs bg-gray-200 text-gray-600">已拉黑</span>{% endif %}
@@ -108,7 +108,7 @@
       <ul class="divide-y text-sm">
         {% for n in notifications %}
         <li class="py-1.5">
-          <div class="flex items-center gap-2"><span class="text-xs text-gray-500">{{ n.created_at.strftime('%m-%d %H:%M') }}</span><span class="px-1.5 py-0.5 rounded text-xs {{ 'bg-green-100 text-green-700' if n.status == 'sent' else 'bg-red-100 text-red-700' }}">{{ n.channel }} {{ n.status }}</span></div>
+          <div class="flex items-center gap-2"><span class="text-xs text-gray-500">{{ n.created_at.strftime('%m-%d %H:%M') }}</span><span class="px-1.5 py-0.5 rounded text-xs {{ 'bg-green-100 text-green-700' if n.status in ('accepted', 'logged') else 'bg-red-100 text-red-700' }}">{{ n.channel }} {{ {'accepted': '服务端已接受', 'logged': '本地日志', 'failed': '失败'}[n.status] if n.status in ('accepted', 'logged', 'failed') else n.status }}</span></div>
           <div class="text-gray-700">{{ n.title }}</div>
           <div class="text-xs text-gray-500 whitespace-pre-wrap">{{ n.content }}</div>
         </li>

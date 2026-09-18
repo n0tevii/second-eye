@@ -1,4 +1,5 @@
 import threading
+from dataclasses import asdict
 from pathlib import Path
 from typing import Optional
 from urllib.parse import parse_qsl, urlencode
@@ -58,7 +59,7 @@ def dashboard(request: Request):
             "tasks": session.query(WatchTask).count(),
             "enabled_tasks": session.query(WatchTask).filter(WatchTask.enabled.is_(True)).count(),
             "listings": session.query(Listing).count(),
-            "notified": session.query(Notification).filter(Notification.status == "sent").count(),
+            "notified": session.query(Notification).filter(Notification.status == "accepted").count(),
         }
         recent = (
             session.query(Listing)
@@ -356,8 +357,8 @@ def listings_page(
             query = query.filter(Listing.task_id == task_id_int)
         if show == "active":
             query = query.filter(Listing.status == "active", Listing.blocked.is_(False))
-        elif show == "gone":
-            query = query.filter(Listing.status == "gone")
+        elif show in ("not_seen", "gone"):
+            query = query.filter(Listing.status == "not_seen_recently")
         elif show == "blocked":
             query = query.filter(Listing.blocked.is_(True))
         if sort == "price_asc":
@@ -411,7 +412,7 @@ def _notify_counts(session, listings) -> dict[int, int]:
         session.query(Notification.listing_id, func.count(Notification.id))
         .filter(
             Notification.listing_id.in_([item.id for item in listings]),
-            Notification.status == "sent",
+            Notification.status == "accepted",
         )
         .group_by(Notification.listing_id)
         .all()
@@ -436,8 +437,8 @@ def listings_more(
             query = query.filter(Listing.task_id == task_id_int)
         if show == "active":
             query = query.filter(Listing.status == "active", Listing.blocked.is_(False))
-        elif show == "gone":
-            query = query.filter(Listing.status == "gone")
+        elif show in ("not_seen", "gone"):
+            query = query.filter(Listing.status == "not_seen_recently")
         elif show == "blocked":
             query = query.filter(Listing.blocked.is_(True))
         if sort == "price_asc":
@@ -475,7 +476,7 @@ def listing_detail_page(request: Request, listing_id: int):
             .order_by(Notification.id.desc())
             .all()
         )
-        notify_count = sum(1 for n in notifications if n.status == "sent")
+        notify_count = sum(1 for n in notifications if n.status == "accepted")
         first_price = snapshots[0].price if snapshots else listing.price
         drop_pct = (first_price - listing.price) / first_price if first_price else 0.0
     return templates.TemplateResponse(
@@ -593,11 +594,30 @@ def settings_page(request: Request):
     login_status, login_message = (
         login_session.status() if login_session else ("idle", "")
     )
+    safe_settings = asdict(settings)
+    secret_fields = {
+        "xianyu_cookie",
+        "llm_api_key",
+        "llm_base_url",
+        "serverchan_sendkey",
+        "proxy",
+        "vision_api_key",
+        "vision_base_url",
+        "wecom_webhook",
+        "feishu_webhook",
+        "feishu_secret",
+        "gotify_token",
+        "gotify_url",
+    }
+    configured = {key: bool(safe_settings.get(key)) for key in secret_fields}
+    for key in secret_fields:
+        safe_settings[key] = ""
     return templates.TemplateResponse(
         request,
         "settings.html",
         {
-            "settings": settings,
+            "settings": safe_settings,
+            "configured": configured,
             "login_status": login_status,
             "login_message": login_message,
             "active": "settings",
@@ -682,13 +702,18 @@ def save_settings(
         "vision_enabled": "1" if vision_enabled else "0",
     }
     for key in (
+        "xianyu_cookie",
         "llm_api_key",
+        "llm_base_url",
         "serverchan_sendkey",
         "vision_api_key",
+        "vision_base_url",
         "wecom_webhook",
         "feishu_webhook",
         "feishu_secret",
         "gotify_token",
+        "gotify_url",
+        "proxy",
     ):
         if values.get(key) == "":
             values.pop(key)  # 留空 = 保持原值
@@ -783,8 +808,8 @@ def api_list_listings(
             query = query.filter(Listing.task_id == task_id_int)
         if show == "active":
             query = query.filter(Listing.status == "active", Listing.blocked.is_(False))
-        elif show == "gone":
-            query = query.filter(Listing.status == "gone")
+        elif show in ("not_seen", "gone"):
+            query = query.filter(Listing.status == "not_seen_recently")
         elif show == "blocked":
             query = query.filter(Listing.blocked.is_(True))
         if sort == "price_asc":
@@ -822,5 +847,5 @@ def api_stats(request: Request):
             "tasks": session.query(WatchTask).count(),
             "enabled_tasks": session.query(WatchTask).filter(WatchTask.enabled.is_(True)).count(),
             "listings": session.query(Listing).count(),
-            "notified": session.query(Notification).filter(Notification.status == "sent").count(),
+            "notified": session.query(Notification).filter(Notification.status == "accepted").count(),
         }

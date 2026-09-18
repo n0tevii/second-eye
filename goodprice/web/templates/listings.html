@@ -14,7 +14,7 @@
   </select>
   <select name="show" class="border rounded px-3 py-2" onchange="this.form.submit()">
     <option value="active" {{ 'selected' if show == 'active' }}>在售</option>
-    <option value="gone" {{ 'selected' if show == 'gone' }}>已下架</option>
+    <option value="not_seen" {{ 'selected' if show in ('not_seen', 'gone') }}>近期未检索到</option>
     <option value="blocked" {{ 'selected' if show == 'blocked' }}>已拉黑</option>
     <option value="all" {{ 'selected' if show == 'all' }}>全部</option>
   </select>

@@ -26,6 +26,8 @@ def base_settings(tmp_db):
     return Settings(
         database_url=tmp_db,
         _env_file=None,
+        admin_username="test-admin",
+        admin_password="test-password-1234",
         default_crawl_interval_minutes=20,
         default_crawl_jitter_minutes=0,
     )

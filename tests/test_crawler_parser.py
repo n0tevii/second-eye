@@ -19,6 +19,8 @@ SELLER_FIXTURE = Path(__file__).parent / "fixtures" / "xianyu_seller.html"
 def test_parse_price():
     assert parse_price("¥2999.00") == 2999.0
     assert parse_price(" 450 ") == 450.0
+    assert parse_price("¥51,000") == 51000.0
+    assert parse_price("¥51，000.50") == 51000.5
     with pytest.raises(ValueError):
         parse_price("面议")
 

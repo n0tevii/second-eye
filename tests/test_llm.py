@@ -54,6 +54,15 @@ def test_http_error_message_includes_response_body():
     assert "Model Not Exist: glm-xxx" in str(exc_info.value)
 
 
+def test_http_error_redacts_configured_api_key():
+    def handler(request):
+        return httpx.Response(400, text="invalid key test-key")
+
+    with pytest.raises(httpx.HTTPStatusError) as exc_info:
+        _client(handler).analyze_requirement("t", "d", "r")
+    assert "test-key" not in str(exc_info.value)
+
+
 def test_429_retries_then_succeeds():
     calls = []
 

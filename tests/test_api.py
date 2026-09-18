@@ -12,7 +12,44 @@ from goodprice.models import Listing
 def _client(base_settings, session_factory):
     app = build_app(settings=base_settings, session_factory=session_factory, with_scheduler=False)
     app.state.run_job = lambda task_id: None
-    return TestClient(app, follow_redirects=False)
+    client = TestClient(app, follow_redirects=False)
+    client.headers.update(
+        {
+            "Authorization": "Basic dGVzdC1hZG1pbjp0ZXN0LXBhc3N3b3JkLTEyMzQ=",
+            "Origin": "http://testserver",
+        }
+    )
+    return client
+
+
+def test_management_routes_require_auth_and_same_origin(base_settings, session_factory):
+    app = build_app(settings=base_settings, session_factory=session_factory, with_scheduler=False)
+    with TestClient(app, follow_redirects=False) as client:
+        assert client.get("/").status_code == 401
+        assert client.get("/api/tasks").status_code == 401
+        assert client.get("/healthz").status_code == 200
+        auth = {"Authorization": "Basic dGVzdC1hZG1pbjp0ZXN0LXBhc3N3b3JkLTEyMzQ="}
+        assert client.get("/api/tasks", headers=auth).status_code == 200
+        assert client.post("/api/tasks", headers=auth, json={"keyword": "x"}).status_code == 403
+
+
+def test_settings_never_echoes_secrets_or_allows_caching(base_settings, session_factory):
+    client = _client(base_settings, session_factory)
+    client.app.state.settings_service.set_many(
+        {
+            "xianyu_cookie": "cookie=very-secret",
+            "proxy": "http://user:pass@proxy:7890",
+            "llm_base_url": "https://model.example/v1?key=url-secret",
+        }
+    )
+    response = client.get("/settings")
+    assert response.status_code == 200
+    assert "very-secret" not in response.text
+    assert "user:pass" not in response.text
+    assert "url-secret" not in response.text
+    assert response.headers["cache-control"].startswith("no-store")
+    assert "cdn.tailwindcss.com" not in response.text
+    assert "unpkg.com" not in response.text
 
 
 def test_pages_render(base_settings, session_factory):
@@ -229,7 +266,7 @@ def test_notifications_page_and_delete(base_settings, session_factory):
     from goodprice.models import Notification
 
     with session_factory() as session:
-        session.add(Notification(channel="log", status="sent", title="消息甲", content="内容甲"))
+        session.add(Notification(channel="log", status="logged", title="消息甲", content="内容甲"))
         session.add(Notification(channel="serverchan", status="failed", title="消息乙", content="内容乙"))
         session.commit()
         ids = [r.id for r in session.query(Notification).order_by(Notification.id).all()]
@@ -241,8 +278,8 @@ def test_notifications_page_and_delete(base_settings, session_factory):
     assert resp.status_code == 303
     assert len(client.get("/api/notifications").json()) == 1
     with session_factory() as session:
-        session.add(Notification(channel="log", status="sent", title="x", content="y"))
-        session.add(Notification(channel="log", status="sent", title="y", content="z"))
+        session.add(Notification(channel="log", status="logged", title="x", content="y"))
+        session.add(Notification(channel="log", status="logged", title="y", content="z"))
         session.commit()
         ids2 = [r.id for r in session.query(Notification).all()]
     client.post("/notifications/delete-batch", data={"ids": ids2})
@@ -266,20 +303,20 @@ def test_listings_filter_empty_task_id_ok(base_settings, session_factory):
     assert client.get("/api/listings?task_id=&sort=satisfaction").status_code == 200
 
 
-def test_listings_show_gone_filter(base_settings, session_factory):
+def test_listings_show_not_seen_filter(base_settings, session_factory):
     client = _client(base_settings, session_factory)
     with session_factory() as session:
         session.add(Listing(platform="xianyu", external_id="1", title="在售", price=1, url="u", status="active"))
-        session.add(Listing(platform="xianyu", external_id="2", title="下架", price=1, url="v", status="gone"))
+        session.add(Listing(platform="xianyu", external_id="2", title="近期未见", price=1, url="v", status="not_seen_recently"))
         session.add(Listing(platform="xianyu", external_id="3", title="拉黑", price=1, url="w", blocked=True))
         session.commit()
     assert [d["title"] for d in client.get("/api/listings?show=active").json()] == ["在售"]
-    assert [d["title"] for d in client.get("/api/listings?show=gone").json()] == ["下架"]
+    assert [d["title"] for d in client.get("/api/listings?show=not_seen").json()] == ["近期未见"]
     assert [d["title"] for d in client.get("/api/listings?show=blocked").json()] == ["拉黑"]
     assert len(client.get("/api/listings?show=all").json()) == 3
-    page = client.get("/listings?show=gone")
-    assert "已下架" in page.text
-    assert 'value="gone"' in page.text
+    page = client.get("/listings?show=not_seen")
+    assert "近期未检索到" in page.text
+    assert 'value="not_seen"' in page.text
 
 
 def test_listings_actions_redirect_with_toast(base_settings, session_factory):
@@ -329,7 +366,7 @@ def test_listing_detail_page_shows_analysis_blocks(base_settings, session_factor
             ]
         )
         session.add(
-            Notification(listing_id=listing.id, channel="serverchan", status="sent", title="历史通知标题", content="内容")
+            Notification(listing_id=listing.id, channel="serverchan", status="accepted", title="历史通知标题", content="内容")
         )
         session.commit()
         listing_id = listing.id
@@ -495,7 +532,7 @@ def test_listings_delete_single_and_batch(base_settings, session_factory):
         l2 = Listing(platform="xianyu", external_id="2", title="乙", price=2, url="v")
         session.add_all([l1, l2])
         session.flush()
-        session.add(Notification(listing_id=l1.id, channel="log", status="sent", title="t"))
+        session.add(Notification(listing_id=l1.id, channel="log", status="logged", title="t"))
         session.commit()
         ids = [l1.id, l2.id]
     resp = client.post(f"/listings/{ids[0]}/delete")

@@ -23,12 +23,20 @@ def _sync_tasks(session_factory, submit_fn, task_service, scheduler) -> None:
     job_ids = {job.id for job in scheduler.get_jobs()}
     for task_id in enabled_ids:
         job_id = f"crawl_{task_id}"
-        if job_id in job_ids:
-            continue
         task = task_service.get_task(task_id)
+        trigger = IntervalTrigger(minutes=max(1, task.interval_minutes))
+        if job_id in job_ids:
+            current = scheduler.get_job(job_id)
+            current_seconds = getattr(getattr(current, "trigger", None), "interval", None)
+            current_seconds = (
+                current_seconds.total_seconds() if current_seconds is not None else None
+            )
+            if current_seconds != trigger.interval.total_seconds():
+                scheduler.reschedule_job(job_id, trigger=trigger)
+            continue
         scheduler.add_job(
             submit_fn,
-            trigger=IntervalTrigger(minutes=max(1, task.interval_minutes)),
+            trigger=trigger,
             args=[task_id],
             id=job_id,
             next_run_time=datetime.now(),

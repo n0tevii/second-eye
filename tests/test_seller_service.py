@@ -70,6 +70,14 @@ def test_compute_risk_prefers_detail_rate():
     assert compute_risk(seller, detail_rate=100.0)[0] == "低"
 
 
+def test_negative_credit_label_is_not_hidden_by_high_rate():
+    level, reason = compute_risk(None, credit_label="卖家信用较差", detail_rate=0.99)
+    assert level == "高"
+    assert "较差" in reason
+    assert "99%" in reason
+    assert "冲突" in reason
+
+
 def test_compute_risk_real_seller_without_label(session_factory):
     with session_factory() as session:
         session.add(Seller(platform="xianyu", seller_uid="9", positive_count=133, total_count=194))

@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM python:3.11.16-slim-bookworm
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -6,12 +6,16 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+ARG APP_VERSION=dev
+
 ARG HTTP_PROXY
 ARG HTTPS_PROXY
 
+COPY requirements.lock ./
+
 RUN env HTTP_PROXY="${HTTP_PROXY}" HTTPS_PROXY="${HTTPS_PROXY}" \
     http_proxy="${HTTP_PROXY}" https_proxy="${HTTPS_PROXY}" \
-    sh -c 'pip install --no-cache-dir "playwright==1.62.0" && playwright install --with-deps chromium'
+    sh -c 'pip install --no-cache-dir -r requirements.lock && playwright install --with-deps chromium'
 
 RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends x11vnc novnc websockify \
@@ -22,9 +26,11 @@ RUN apt-get update \
 COPY pyproject.toml README.md ./
 COPY goodprice ./goodprice
 
-RUN pip install --no-cache-dir .
+RUN pip install --no-cache-dir --no-deps .
 
 RUN mkdir -p /app/data
+
+ENV APP_VERSION=${APP_VERSION}
 
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod 755 /usr/local/bin/docker-entrypoint.sh

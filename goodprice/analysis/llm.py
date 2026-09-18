@@ -214,7 +214,9 @@ class LLMClient:
                         time.sleep(self.retry_delay)
                     continue
                 if response.status_code >= 400:
-                    detail = response.text[:300]
+                    from goodprice.security import redact_secrets
+
+                    detail = redact_secrets(response.text[:300]).replace(self.api_key, "***")
                     raise httpx.HTTPStatusError(
                         f"LLM 请求失败 {response.status_code}: {detail}",
                         request=response.request,
@@ -267,7 +269,11 @@ class LLMClient:
                             time.sleep(self.retry_delay)
                         continue
                     if response.status_code >= 400:
-                        detail = response.read().decode("utf-8", errors="replace")[:300]
+                        from goodprice.security import redact_secrets
+
+                        detail = redact_secrets(
+                            response.read().decode("utf-8", errors="replace")[:300]
+                        ).replace(self.api_key, "***")
                         raise httpx.HTTPStatusError(
                             f"LLM 请求失败 {response.status_code}: {detail}",
                             request=response.request,

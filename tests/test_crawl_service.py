@@ -1,7 +1,7 @@
 import pytest
 
 from goodprice.crawler.base import CrawlerAuthError, ListingData, SellerData
-from goodprice.models import Listing
+from goodprice.models import Listing, Notification, Seller
 from goodprice.services.crawl_service import CrawlService, TaskRunGuard
 from goodprice.services.seller_service import SellerService
 from goodprice.services.settings_service import SettingsService
@@ -84,7 +84,7 @@ class FakeVision:
 
 
 class FakeNotifier:
-    def __init__(self, name="log"):
+    def __init__(self, name="fake"):
         self.name = name
         self.messages = []
 
@@ -156,7 +156,7 @@ def _service_with_seller(session_factory, base_settings, adapter, **kwargs):
         adapter=adapter,
         llm=kwargs.get("llm") or FakeLLM(),
         vision=kwargs.get("vision") if "vision" in kwargs else FakeVision(),
-        notifiers=[("log", notifier)],
+        notifiers=[("fake", notifier)],
         settings_service=settings_service,
         seller_service=seller_service,
     )
@@ -255,7 +255,7 @@ def test_price_drop_improves_score_and_renotifies(session_factory, base_settings
     assert "价格更新重推" in notifier2.messages[0].content
 
 
-def test_gone_after_three_misses_and_reappear_reevaluates(session_factory, base_settings):
+def test_recently_not_seen_after_three_misses_and_reappear_reevaluates(session_factory, base_settings):
     task = TaskService(session_factory).create_task({"keyword": "k"})
     crawl, notifier, _ = _service(session_factory, base_settings, adapter=FakeAdapter([_item()]))
     crawl.run_task(task.id)
@@ -266,7 +266,7 @@ def test_gone_after_three_misses_and_reappear_reevaluates(session_factory, base_
         crawl_empty.run_task(task.id)
     with session_factory() as session:
         listing = session.query(Listing).one()
-        assert listing.status == "gone"
+        assert listing.status == "not_seen_recently"
         assert listing.missed_count == 3
 
     improved = FakeVision(
@@ -710,6 +710,186 @@ def test_guard_prevents_concurrent_run(session_factory, base_settings):
     stats = crawl.run_task(task.id)
     assert stats.get("skipped") == "already_running"
     guard.finish(task.id)
+
+
+def test_disabled_queued_task_stops_before_search(session_factory, base_settings):
+    service = TaskService(session_factory)
+    task = service.create_task({"keyword": "k"})
+    service.toggle_task(task.id)
+    adapter = FakeAdapter([_item()])
+    calls = []
+    original_search = adapter.search
+
+    def search(keyword):
+        calls.append(keyword)
+        return original_search(keyword)
+
+    adapter.search = search
+    crawl, notifier, _ = _service(session_factory, base_settings, adapter=adapter)
+    stats = crawl.run_task(task.id)
+    assert stats["skipped"] == "disabled"
+    assert calls == []
+    assert notifier.messages == []
+
+
+def test_task_disabled_after_search_stops_before_external_work(session_factory, base_settings):
+    service = TaskService(session_factory)
+    task = service.create_task({"keyword": "k"})
+
+    class DisablingAdapter(FakeAdapter):
+        def search(self, keyword):
+            service.toggle_task(task.id)
+            return [_item()]
+
+    adapter = DisablingAdapter()
+    crawl, notifier, _ = _service(session_factory, base_settings, adapter=adapter)
+    stats = crawl.run_task(task.id)
+    assert stats["skipped"] == "disabled"
+    assert adapter.fetch_calls == []
+    assert notifier.messages == []
+
+
+def test_task_disabled_during_model_call_does_not_continue_pipeline(
+    session_factory, base_settings
+):
+    service = TaskService(session_factory)
+    task = service.create_task({"keyword": "k", "condition_requirement": "屏幕完好"})
+
+    class DisablingLLM(FakeLLM):
+        def analyze_requirement(self, **kwargs):
+            service.toggle_task(task.id)
+            return super().analyze_requirement(**kwargs)
+
+    vision = FakeVision()
+    crawl, notifier, _ = _service(
+        session_factory,
+        base_settings,
+        adapter=FakeAdapter([_item()]),
+        llm=DisablingLLM(),
+        vision=vision,
+    )
+    stats = crawl.run_task(task.id)
+    assert stats["skipped"] == "disabled"
+    assert vision.calls == []
+    assert notifier.messages == []
+
+
+def test_failed_external_delivery_retries_and_only_then_marks_notified(
+    session_factory, base_settings
+):
+    class BrokenNotifier(FakeNotifier):
+        def send(self, message):
+            raise RuntimeError("synthetic delivery failure?token=secret-value")
+
+    task = TaskService(session_factory).create_task({"keyword": "k"})
+    crawl, _, _ = _service(
+        session_factory,
+        base_settings,
+        adapter=FakeAdapter([_item()]),
+        notifier=BrokenNotifier(),
+    )
+    first = crawl.run_task(task.id)
+    assert first["notified"] == 0
+    with session_factory() as session:
+        listing = session.query(Listing).one()
+        failed = session.query(Notification).one()
+        assert listing.notified_at is None
+        assert failed.status == "failed"
+        assert failed.attempt == 1
+        assert "secret-value" not in (failed.detail or "")
+
+    recovered, notifier, _ = _service(
+        session_factory, base_settings, adapter=FakeAdapter([_item()])
+    )
+    second = recovered.run_task(task.id)
+    assert second["notified"] == 1
+    assert len(notifier.messages) == 1
+    with session_factory() as session:
+        listing = session.query(Listing).one()
+        rows = session.query(Notification).order_by(Notification.id).all()
+        assert listing.notified_at is not None
+        assert [row.status for row in rows] == ["failed", "accepted"]
+        assert rows[-1].attempt == 2
+
+    recovered.run_task(task.id)
+    assert len(notifier.messages) == 1
+
+
+def test_retry_is_limited_per_channel_and_does_not_repeat_success(
+    session_factory, base_settings
+):
+    class SwitchNotifier(FakeNotifier):
+        def __init__(self, name, failing=False):
+            super().__init__(name)
+            self.failing = failing
+            self.calls = 0
+
+        def send(self, message):
+            self.calls += 1
+            if self.failing:
+                raise RuntimeError("temporary failure")
+            super().send(message)
+
+    task = TaskService(session_factory).create_task({"keyword": "k"})
+    good = SwitchNotifier("good")
+    bad = SwitchNotifier("bad", failing=True)
+    settings_service = SettingsService(session_factory, base=base_settings)
+    crawl = CrawlService(
+        session_factory=session_factory,
+        adapter=FakeAdapter([_item()]),
+        llm=FakeLLM(),
+        vision=FakeVision(),
+        notifiers=[("good", good), ("bad", bad)],
+        settings_service=settings_service,
+    )
+    assert crawl.run_task(task.id)["notified"] == 1
+    assert good.calls == 1 and bad.calls == 1
+    crawl.run_task(task.id)
+    crawl.run_task(task.id)
+    crawl.run_task(task.id)
+    assert good.calls == 1
+    assert bad.calls == 3
+
+
+def test_blocked_seller_new_listing_is_stopped_after_detail(
+    session_factory, base_settings
+):
+    with session_factory() as session:
+        session.add(Seller(platform="xianyu", seller_uid="2672367114", blocked=True))
+        session.commit()
+    task = TaskService(session_factory).create_task({"keyword": "k"})
+    crawl, notifier = _service_with_seller(
+        session_factory, base_settings, SellerFakeAdapter([_item()])
+    )
+    stats = crawl.run_task(task.id)
+    assert stats["notified"] == 0
+    assert notifier.messages == []
+    with session_factory() as session:
+        assert session.query(Listing).one().blocked is True
+
+
+def test_same_price_reappearance_is_reevaluated(session_factory, base_settings):
+    task = TaskService(session_factory).create_task({"keyword": "k"})
+    crawl, _, _ = _service(session_factory, base_settings, adapter=FakeAdapter([_item()]))
+    crawl.run_task(task.id)
+    with session_factory() as session:
+        listing = session.query(Listing).one()
+        listing.status = "not_seen_recently"
+        session.commit()
+    improved = FakeVision(
+        verdict={"condition_score": 10, "defects": [], "recommended": True, "reason": "更好"}
+    )
+    again, notifier, _ = _service(
+        session_factory,
+        base_settings,
+        adapter=FakeAdapter([_item()]),
+        vision=improved,
+    )
+    stats = again.run_task(task.id)
+    assert stats["reevaluated"] == 1
+    assert len(improved.calls) == 1
+    assert stats["notified"] == 1
+    assert len(notifier.messages) == 1
 
 
 def test_adapter_error_records_last_error(session_factory, base_settings):

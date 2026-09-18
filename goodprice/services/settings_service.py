@@ -1,4 +1,4 @@
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Optional
 
 from goodprice.config import Settings
@@ -20,27 +20,27 @@ class RuntimeSettings:
         "vision_enabled",
     }
 
-    xianyu_cookie: str = ""
+    xianyu_cookie: str = field(default="", repr=False)
     llm_base_url: str = ""
-    llm_api_key: str = ""
+    llm_api_key: str = field(default="", repr=False)
     llm_model: str = ""
     llm_api_format: str = "chat_completions"
-    serverchan_sendkey: str = ""
-    proxy: str = ""
+    serverchan_sendkey: str = field(default="", repr=False)
+    proxy: str = field(default="", repr=False)
     default_crawl_interval_minutes: int = 20
     default_crawl_jitter_minutes: int = 10
     vision_base_url: str = ""
-    vision_api_key: str = ""
+    vision_api_key: str = field(default="", repr=False)
     vision_model: str = ""
     vision_api_format: str = "chat_completions"
-    wecom_webhook: str = ""
-    feishu_webhook: str = ""
-    feishu_secret: str = ""
+    wecom_webhook: str = field(default="", repr=False)
+    feishu_webhook: str = field(default="", repr=False)
+    feishu_secret: str = field(default="", repr=False)
     feishu_enabled: bool = True
     gotify_url: str = ""
-    gotify_token: str = ""
+    gotify_token: str = field(default="", repr=False)
     gotify_priority: int = 5
-    gotify_enabled: bool = True
+    gotify_enabled: bool = False
     serverchan_enabled: bool = True
     wecom_robot_enabled: bool = True
     vision_enabled: bool = True

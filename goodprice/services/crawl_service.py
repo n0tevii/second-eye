@@ -1,3 +1,4 @@
+import hashlib
 import logging
 import random
 import threading
@@ -9,6 +10,7 @@ from goodprice.crawler.base import ListingData
 from goodprice.crawler.parser import is_product_image
 from goodprice.models import Listing, Notification, PriceSnapshot, WatchTask
 from goodprice.notify.base import NotificationMessage
+from goodprice.security import redact_secrets
 from goodprice.services.satisfaction import (
     compute_satisfaction,
     drop_pct_from_snapshots,
@@ -16,8 +18,13 @@ from goodprice.services.satisfaction import (
 
 logger = logging.getLogger(__name__)
 
-GONE_THRESHOLD = 3
+NOT_SEEN_THRESHOLD = 3
 MAX_BATCH_VALUE_ITEMS = 30
+MAX_NOTIFICATION_ATTEMPTS = 3
+
+
+class TaskDisabled(RuntimeError):
+    pass
 
 
 class TaskRunGuard:
@@ -70,6 +77,9 @@ class CrawlService:
             return {"found": 0, "new": 0, "notified": 0, "skipped": "already_running"}
         try:
             return self._run_impl(task_id)
+        except TaskDisabled:
+            logger.info("任务 %s 已停用，在下一检查点停止", task_id)
+            return {"found": 0, "new": 0, "notified": 0, "skipped": "disabled"}
         finally:
             self.guard.finish(task_id)
 
@@ -80,25 +90,32 @@ class CrawlService:
             "notified": 0,
             "backfilled": 0,
             "reevaluated": 0,
-            "gone": 0,
+            "not_seen_recently": 0,
         }
         settings = self.settings_service.get()
+        self._assert_enabled(task_id)
         jitter = int(settings.default_crawl_jitter_minutes)
         if jitter:
-            time.sleep(random.uniform(0, jitter * 60))
+            self._interruptible_wait(task_id, random.uniform(0, jitter * 60))
         with self._session_factory() as session:
             task = session.get(WatchTask, task_id)
             if task is None:
                 raise RuntimeError(f"任务 {task_id} 不存在")
+            if not task.enabled:
+                raise TaskDisabled()
             task.last_run_at = datetime.now()
             task.last_error = None
             task.last_run_count = (task.last_run_count or 0) + 1
             session.commit()
         try:
+            self._assert_enabled(task_id)
             items = self.adapter.search(task.keyword)
         except Exception as exc:
+            if isinstance(exc, TaskDisabled):
+                raise
             self._record_error(task_id, f"抓取失败: {exc}")
             raise
+        self._assert_enabled(task_id)
         stats["found"] = len(items)
         logger.info("任务 %s 搜索命中 %s 条", task_id, len(items))
         batch_rows: list[dict] = []
@@ -108,6 +125,7 @@ class CrawlService:
             task = session.get(WatchTask, task_id)
             try:
                 for data in items:
+                    self._assert_enabled(task_id)
                     if task.max_price and data.price > task.max_price:
                         logger.info("任务 %s 跳过（超最高价 %s）: %s ¥%s", task_id, task.max_price, data.title[:30], data.price)
                         continue
@@ -129,6 +147,9 @@ class CrawlService:
                     )
                     if existing is not None and abs(existing.price - data.price) > 0.001:
                         old_price = existing.price
+                    was_not_seen = bool(
+                        existing is not None and existing.status == "not_seen_recently"
+                    )
                     listing, is_new = self._upsert_listing(session, task, data)
                     seen_ids.add(listing.id)
                     if self._is_blocked(session, listing):
@@ -136,11 +157,19 @@ class CrawlService:
                         continue
                     listing.status = "active"
                     listing.missed_count = 0
+                    # Do not hold SQLite's write lock across browser/model/network calls;
+                    # task toggles must remain able to persist while a run is active.
+                    session.commit()
                     if is_new:
                         stats["new"] += 1
                         logger.info("任务 %s 新品 %s：%s ¥%s", task_id, data.external_id, data.title[:30], data.price)
                         if task.fetch_detail:
+                            self._assert_enabled(task_id)
                             self._fetch_detail(session, listing)
+                            self._assert_enabled(task_id)
+                        if self._is_blocked(session, listing):
+                            session.commit()
+                            continue
                         if not self._requirement_pass(session, listing, task):
                             logger.info("任务 %s 需求不匹配，不收录：%s", task_id, listing.title[:30])
                             session.commit()
@@ -151,12 +180,15 @@ class CrawlService:
                             session.commit()
                             continue
                         self._seller_check(session, listing, task)
+                        if self._is_blocked(session, listing):
+                            session.commit()
+                            continue
                         batch_rows.append(
                             self._batch_row(listing, task.condition_requirement or "")
                         )
                         pending.append((task, listing, old_price, False))
                     else:
-                        changed = old_price is not None or listing.status == "gone"
+                        changed = old_price is not None or was_not_seen
                         if changed:
                             stats["reevaluated"] += 1
                             logger.info("任务 %s 重评 %s：%s（价格变化或重新上架）", task_id, data.external_id, data.title[:30])
@@ -168,6 +200,9 @@ class CrawlService:
                                 session.commit()
                                 continue
                             self._seller_check(session, listing, task)
+                            if self._is_blocked(session, listing):
+                                session.commit()
+                                continue
                             batch_rows.append(
                                 self._batch_row(listing, task.condition_requirement or "")
                             )
@@ -175,25 +210,35 @@ class CrawlService:
                         else:
                             if self._backfill(session, listing, task):
                                 stats["backfilled"] += 1
+                            if self._retry_failed_notifications(session, task, listing):
+                                stats["notified"] += 1
                     session.commit()
-                # 下架软标记：本轮未出现的该任务商品
+                # 搜索结果有覆盖上限；这里只记录“近期未检索到”，不推断真实下架。
                 for other in (
                     session.query(Listing)
                     .filter(Listing.task_id == task.id)
                     .filter(~Listing.id.in_(seen_ids))
                 ):
                     other.missed_count = (other.missed_count or 0) + 1
-                    if other.missed_count >= GONE_THRESHOLD and other.status != "gone":
-                        other.status = "gone"
-                        stats["gone"] += 1
-                        logger.info("任务 %s 商品 %s 标记为已下架", task_id, other.title[:30])
+                    if (
+                        other.missed_count >= NOT_SEEN_THRESHOLD
+                        and other.status != "not_seen_recently"
+                    ):
+                        other.status = "not_seen_recently"
+                        stats["not_seen_recently"] += 1
+                        logger.info("任务 %s 商品 %s 标记为近期未检索到", task_id, other.title[:30])
                 session.commit()
                 # 批性价比：本批通过筛选的商品统一横向对比
                 if batch_rows and self._value_client() is not None:
+                    self._assert_enabled(task_id)
                     self._batch_value(session, batch_rows)
                     session.commit()
                 # 通知：新品在批性价比后统一发出；重评仅满意度提高时发出
                 for task, listing, old_price, is_renotify in pending:
+                    self._assert_enabled(task_id)
+                    if self._is_blocked(session, listing):
+                        session.commit()
+                        continue
                     satisfaction = self._satisfaction(listing)
                     listing.satisfaction = satisfaction
                     if (
@@ -202,7 +247,7 @@ class CrawlService:
                         and satisfaction <= listing.last_notified_satisfaction
                     ):
                         continue
-                    self._notify(
+                    accepted = self._notify(
                         session,
                         task,
                         listing,
@@ -210,14 +255,32 @@ class CrawlService:
                         old_price=old_price,
                         is_renotify=is_renotify,
                     )
-                    stats["notified"] += 1
+                    if accepted:
+                        stats["notified"] += 1
                 session.commit()
+            except TaskDisabled:
+                session.commit()
+                raise
             except Exception as exc:
-                task.last_error = f"处理商品时出错: {exc}"[:1000]
+                task.last_error = f"处理商品时出错: {redact_secrets(exc)}"[:1000]
                 session.commit()
                 raise
             session.commit()
         return stats
+
+    def _assert_enabled(self, task_id: Optional[int]) -> None:
+        if task_id is None:
+            return
+        with self._session_factory() as session:
+            task = session.get(WatchTask, task_id)
+            if task is None or not task.enabled:
+                raise TaskDisabled()
+
+    def _interruptible_wait(self, task_id: int, seconds: float) -> None:
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            self._assert_enabled(task_id)
+            time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
 
     def _upsert_listing(self, session, task: WatchTask, data: ListingData):
         listing = (
@@ -277,7 +340,7 @@ class CrawlService:
         try:
             detail = self.adapter.fetch_detail(listing.url)
         except Exception as exc:
-            logger.warning("详情抓取失败，退回标题判断: %s", exc)
+            logger.warning("详情抓取失败，退回标题判断: %s", redact_secrets(exc))
             return
         if detail.description:
             listing.description = detail.description
@@ -326,6 +389,7 @@ class CrawlService:
     def _seller_check(self, session, listing: Listing, task: WatchTask) -> None:
         if not listing.seller_uid or self.seller_service is None:
             return
+        self._assert_enabled(task.id)
         raw = dict(listing.seller_risk or {})
         seller = self.seller_service.ensure_fresh(
             task.platform,
@@ -334,6 +398,7 @@ class CrawlService:
             credit_label=raw.get("credit_label"),
             session=session,
         )
+        self._assert_enabled(task.id)
         from goodprice.services.seller_service import compute_risk
 
         level, reason = compute_risk(
@@ -355,15 +420,19 @@ class CrawlService:
         if not requirement or not self.llm.enabled:
             return True
         try:
+            self._assert_enabled(task.id)
             verdict = self.llm.analyze_requirement(
                 title=listing.title,
                 description=listing.description or "",
                 requirement=requirement,
             )
+            self._assert_enabled(task.id)
+        except TaskDisabled:
+            raise
         except Exception as exc:
-            logger.warning("需求分析失败，不拦截: %s", exc)
+            logger.warning("需求分析失败，不拦截: %s", redact_secrets(exc))
             listing.requirement_match = None
-            listing.requirement_reason = f"需求分析失败，未过滤（{exc}）"[:500]
+            listing.requirement_reason = f"需求分析失败，未过滤（{redact_secrets(exc)}）"[:500]
             return True
         listing.requirement_match = verdict["matched"]
         listing.requirement_reason = verdict["reason"]
@@ -379,6 +448,7 @@ class CrawlService:
         last_exc = None
         for _attempt in range(2):
             try:
+                self._assert_enabled(task.id)
                 verdict = self.vision.analyze_condition(
                     title=listing.title,
                     price=listing.price,
@@ -386,13 +456,16 @@ class CrawlService:
                     requirement=task.condition_requirement or "",
                     image_urls=valid,
                 )
+                self._assert_enabled(task.id)
+            except TaskDisabled:
+                raise
             except Exception as exc:
                 last_exc = exc
                 continue
             listing.condition_score = verdict["condition_score"]
             listing.condition_detail = verdict
             return
-        listing.condition_detail = {"error": str(last_exc)[:200]}
+        listing.condition_detail = {"error": redact_secrets(last_exc)[:200]}
 
     def _condition_gate_fails(self, task: WatchTask, listing: Listing) -> bool:
         return bool(
@@ -452,8 +525,10 @@ class CrawlService:
             return
         try:
             result = client.analyze_batch_value(rows[:MAX_BATCH_VALUE_ITEMS])
+        except TaskDisabled:
+            raise
         except Exception as exc:
-            logger.warning("批量性价比分析失败，跳过: %s", exc)
+            logger.warning("批量性价比分析失败，跳过: %s", redact_secrets(exc))
             return
         now = datetime.now()
         scores = result.get("scores") or {}
@@ -474,18 +549,23 @@ class CrawlService:
         requirement = (task.condition_requirement or "").strip()
         if requirement and self.llm.enabled and listing.requirement_match is None:
             try:
+                self._assert_enabled(task.id)
                 verdict = self.llm.analyze_requirement(
                     title=listing.title,
                     description=listing.description or "",
                     requirement=requirement,
                 )
+                self._assert_enabled(task.id)
                 listing.requirement_match = verdict["matched"]
                 listing.requirement_reason = verdict["reason"]
                 changed = True
+            except TaskDisabled:
+                raise
             except Exception as exc:
-                logger.warning("回填需求分析失败: %s", exc)
+                logger.warning("回填需求分析失败: %s", redact_secrets(exc))
         if self.vision.enabled and listing.condition_score is None:
             try:
+                self._assert_enabled(task.id)
                 verdict = self.vision.analyze_condition(
                     title=listing.title,
                     price=listing.price,
@@ -493,11 +573,14 @@ class CrawlService:
                     requirement=requirement,
                     image_urls=listing.image_urls,
                 )
+                self._assert_enabled(task.id)
                 listing.condition_score = verdict["condition_score"]
                 listing.condition_detail = verdict
                 changed = True
+            except TaskDisabled:
+                raise
             except Exception as exc:
-                logger.warning("回填品相分析失败: %s", exc)
+                logger.warning("回填品相分析失败: %s", redact_secrets(exc))
         return changed
 
     def _notify(
@@ -508,7 +591,7 @@ class CrawlService:
         satisfaction: float,
         old_price: Optional[float] = None,
         is_renotify: bool = False,
-    ) -> None:
+    ) -> bool:
         def _fmt(value: float) -> str:
             return format(value, "g")
 
@@ -562,39 +645,153 @@ class CrawlService:
             content="\n".join(lines),
             url=listing.url,
         )
+        return self._deliver_message(session, task, listing, message, satisfaction)
+
+    def _deliver_message(
+        self,
+        session,
+        task: WatchTask,
+        listing: Listing,
+        message: NotificationMessage,
+        satisfaction: float,
+        channels: Optional[set[str]] = None,
+        event_key: Optional[str] = None,
+    ) -> bool:
+        event_key = event_key or hashlib.sha256(
+            f"{message.title}\0{message.content}\0{message.url}".encode("utf-8")
+        ).hexdigest()
+        accepted_any = False
         for channel, notifier in self.notifiers:
+            if channels is not None and channel not in channels:
+                continue
+            self._assert_enabled(task.id)
+            accepted = (
+                session.query(Notification)
+                .filter_by(
+                    listing_id=listing.id,
+                    channel=channel,
+                    event_key=event_key,
+                    status="accepted" if channel != "log" else "logged",
+                )
+                .first()
+            )
+            if accepted is not None:
+                continue
+            failed_count = (
+                session.query(Notification)
+                .filter_by(
+                    listing_id=listing.id,
+                    channel=channel,
+                    event_key=event_key,
+                    status="failed",
+                )
+                .count()
+            )
+            if channel != "log" and failed_count >= MAX_NOTIFICATION_ATTEMPTS:
+                continue
+            attempt = failed_count + 1
             try:
                 notifier.send(message)
-                logger.info("通知[%s] 已发送：%s", channel, listing.title[:30])
+                status = "logged" if channel == "log" else "accepted"
+                logger.info(
+                    "通知[%s] %s：%s",
+                    channel,
+                    "已写本地日志" if channel == "log" else "服务端已接受",
+                    listing.title[:30],
+                )
                 session.add(
                     Notification(
                         listing_id=listing.id,
                         task_id=task.id,
                         channel=channel,
-                        status="sent",
+                        status=status,
+                        event_key=event_key,
+                        attempt=attempt,
                         title=message.title,
                         content=message.content,
                     )
                 )
+                if channel != "log":
+                    accepted_any = True
             except Exception as exc:
-                logger.warning("通知[%s]失败: %s", channel, exc)
+                detail = redact_secrets(exc)
+                logger.warning("通知[%s]失败（第 %s/%s 次）: %s", channel, attempt, MAX_NOTIFICATION_ATTEMPTS, detail)
                 session.add(
                     Notification(
                         listing_id=listing.id,
                         task_id=task.id,
                         channel=channel,
                         status="failed",
-                        detail=str(exc),
+                        event_key=event_key,
+                        attempt=attempt,
+                        detail=detail[:1000],
                         title=message.title,
                         content=message.content,
                     )
                 )
-        listing.notified_at = datetime.now()
-        listing.last_notified_satisfaction = satisfaction
+            session.commit()
+        if accepted_any:
+            listing.notified_at = datetime.now()
+            listing.last_notified_satisfaction = satisfaction
+            session.commit()
+        return accepted_any
+
+    def _retry_failed_notifications(
+        self, session, task: WatchTask, listing: Listing
+    ) -> bool:
+        failed = (
+            session.query(Notification)
+            .filter_by(listing_id=listing.id, status="failed")
+            .filter(Notification.event_key != "")
+            .order_by(Notification.id.desc())
+            .all()
+        )
+        if not failed:
+            return False
+        latest_event = failed[0].event_key
+        rows = [row for row in failed if row.event_key == latest_event]
+        retry_channels = {
+            row.channel
+            for row in rows
+            if row.channel != "log"
+            and not (
+                session.query(Notification)
+                .filter_by(
+                    listing_id=listing.id,
+                    channel=row.channel,
+                    event_key=latest_event,
+                    status="accepted",
+                )
+                .first()
+            )
+            and (
+                session.query(Notification)
+                .filter_by(
+                    listing_id=listing.id,
+                    channel=row.channel,
+                    event_key=latest_event,
+                    status="failed",
+                )
+                .count()
+                < MAX_NOTIFICATION_ATTEMPTS
+            )
+        }
+        if not retry_channels:
+            return False
+        row = rows[0]
+        return self._deliver_message(
+            session,
+            task,
+            listing,
+            NotificationMessage(title=row.title, content=row.content, url=listing.url),
+            listing.satisfaction,
+            channels=retry_channels,
+            event_key=latest_event,
+        )
 
     def _record_error(self, task_id: int, message: str) -> None:
         with self._session_factory() as session:
             task = session.get(WatchTask, task_id)
             if task:
-                task.last_error = message[:1000]
+                task.last_error = redact_secrets(message)[:1000]
                 session.commit()
