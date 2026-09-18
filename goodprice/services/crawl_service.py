@@ -239,6 +239,7 @@ class CrawlService:
                     if self._is_blocked(session, listing):
                         session.commit()
                         continue
+                    self._update_verification_state(listing, task)
                     satisfaction = self._satisfaction(listing)
                     listing.satisfaction = satisfaction
                     if (
@@ -381,6 +382,7 @@ class CrawlService:
                 self._batch_value(
                     session, [self._batch_row(listing, task.condition_requirement or "")]
                 )
+            self._update_verification_state(listing, task)
             listing.satisfaction = self._satisfaction(listing)
             session.commit()
             stats["updated"] = 1
@@ -391,13 +393,24 @@ class CrawlService:
             return
         self._assert_enabled(task.id)
         raw = dict(listing.seller_risk or {})
-        seller = self.seller_service.ensure_fresh(
-            task.platform,
-            listing.seller_uid,
-            nickname=listing.seller_name,
-            credit_label=raw.get("credit_label"),
-            session=session,
-        )
+        try:
+            seller = self.seller_service.ensure_fresh(
+                task.platform,
+                listing.seller_uid,
+                nickname=listing.seller_name,
+                credit_label=raw.get("credit_label"),
+                session=session,
+            )
+        except TaskDisabled:
+            raise
+        except Exception as exc:
+            detail = redact_secrets(exc)
+            logger.warning("卖家信息获取失败，继续以待核验状态处理: %s", detail)
+            raw["risk_level"] = "未知"
+            raw["risk_reason"] = f"卖家信息获取失败（{detail}）"[:500]
+            raw["nickname"] = listing.seller_name
+            listing.seller_risk = raw
+            return
         self._assert_enabled(task.id)
         from goodprice.services.seller_service import compute_risk
 
@@ -441,6 +454,7 @@ class CrawlService:
     def _condition_analysis(self, session, listing: Listing, task: WatchTask) -> None:
         if not self.vision.enabled:
             return
+        listing.condition_score = None
         valid = [u for u in (listing.image_urls or []) if is_product_image(u)]
         if not valid:
             listing.condition_detail = {"error": "无有效商品图"}
@@ -523,6 +537,12 @@ class CrawlService:
         client = self._value_client()
         if client is None:
             return
+        for row in rows:
+            listing = session.get(Listing, row["listing_id"])
+            if listing is not None:
+                listing.value_score = None
+                listing.value_batch_at = None
+                listing.best_of_batch = False
         try:
             result = client.analyze_batch_value(rows[:MAX_BATCH_VALUE_ITEMS])
         except TaskDisabled:
@@ -581,7 +601,39 @@ class CrawlService:
                 raise
             except Exception as exc:
                 logger.warning("回填品相分析失败: %s", redact_secrets(exc))
+        self._update_verification_state(listing, task)
         return changed
+
+    def _update_verification_state(self, listing: Listing, task: WatchTask) -> None:
+        """记录筛选依据中缺失的部分；缺失不会阻止方案 A 的提醒。"""
+        reasons: list[str] = []
+        requirement = (task.condition_requirement or "").strip()
+        if requirement and listing.requirement_match is None:
+            reasons.append(
+                "需求分析未完成（文本模型未启用）"
+                if not self.llm.enabled
+                else "需求分析失败或结果不完整"
+            )
+        condition_error = ""
+        if isinstance(listing.condition_detail, dict):
+            condition_error = listing.condition_detail.get("error") or ""
+        if not self.vision.enabled:
+            reasons.append("品相分析未完成（视觉模型未启用）")
+        elif listing.condition_score is None or condition_error:
+            reasons.append("品相分析失败或结果不完整")
+        if listing.value_score is None:
+            reasons.append("性价比分析未完成")
+        risk_level = (
+            listing.seller_risk.get("risk_level")
+            if isinstance(listing.seller_risk, dict)
+            else None
+        )
+        if not listing.seller_uid:
+            reasons.append("卖家信息不全（未取得卖家唯一标识）")
+        elif not risk_level or risk_level == "未知":
+            reasons.append("卖家信息不全（风险未核实）")
+        listing.needs_verification = bool(reasons)
+        listing.verification_reasons = reasons
 
     def _notify(
         self,
@@ -595,7 +647,11 @@ class CrawlService:
         def _fmt(value: float) -> str:
             return format(value, "g")
 
-        lines = [f"价格：{_fmt(listing.price)} 元"]
+        lines = []
+        if listing.needs_verification:
+            reasons = "；".join(listing.verification_reasons or ["分析依据不完整"])
+            lines.append(f"状态：待核验（{reasons}）")
+        lines.append(f"价格：{_fmt(listing.price)} 元")
         drop_pct = self._drop_pct(listing)
         if drop_pct >= 0.05:
             lines.append(f"较首见降价 {drop_pct:.0%}")
@@ -641,7 +697,8 @@ class CrawlService:
             if extra:
                 lines.append(extra)
         message = NotificationMessage(
-            title=f"[{task.keyword}] {listing.title}",
+            title=("[待核验] " if listing.needs_verification else "")
+            + f"[{task.keyword}] {listing.title}",
             content="\n".join(lines),
             url=listing.url,
         )

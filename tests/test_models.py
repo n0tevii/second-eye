@@ -112,6 +112,8 @@ def test_round7_listing_columns(session_factory):
         assert listing.value_batch_at is None
         assert listing.best_of_batch is False
         assert listing.last_notified_satisfaction is None
+        assert listing.needs_verification is False
+        assert listing.verification_reasons == []
 
 
 def test_round8_task_columns(session_factory):

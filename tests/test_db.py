@@ -14,7 +14,10 @@ def test_migrate_adds_new_columns(tmp_db):
         task_cols = {row[1] for row in session.execute(text("PRAGMA table_info(watch_tasks)"))}
         listing_cols = {row[1] for row in session.execute(text("PRAGMA table_info(listings)"))}
     assert "fetch_detail" in task_cols
-    assert {"description", "requirement_match", "requirement_reason"} <= listing_cols
+    assert {
+        "description", "requirement_match", "requirement_reason",
+        "needs_verification", "verification_reasons",
+    } <= listing_cols
 
 
 def test_migrate_is_idempotent(session_factory):
@@ -89,6 +92,8 @@ def test_migrate_adds_round7_columns(tmp_db):
         "value_batch_at",
         "best_of_batch",
         "last_notified_satisfaction",
+        "needs_verification",
+        "verification_reasons",
     } <= cols
 
 
@@ -133,3 +138,10 @@ def test_migrate_rebuilds_listings_for_per_task_unique(tmp_db):
         assert session.execute(text("SELECT COUNT(*) FROM listings")).scalar() == 2
         cols = {r[1] for r in session.execute(text("PRAGMA table_info(listings)"))}
         assert "seller_risk" in cols  # 重建后其它列也齐全
+        migrated = session.execute(
+            text(
+                "SELECT needs_verification, verification_reasons "
+                "FROM listings WHERE id=1"
+            )
+        ).one()
+        assert migrated == (1, '["升级后尚未重新核验"]')

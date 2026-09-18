@@ -8,7 +8,8 @@ _LISTINGS_COLUMNS = (
     "published_at, first_seen_at, last_seen_at, condition_score, condition_detail, "
     "notified_at, description, requirement_match, requirement_reason, seller_uid, "
     "seller_name, seller_risk, blocked, satisfaction, status, missed_count, variants, "
-    "value_score, value_batch_at, best_of_batch, last_notified_satisfaction, task_id"
+    "value_score, value_batch_at, best_of_batch, last_notified_satisfaction, task_id, "
+    "needs_verification, verification_reasons"
 )
 
 _LISTINGS_DDL = """
@@ -37,6 +38,8 @@ _LISTINGS_DDL = """
     satisfaction FLOAT NOT NULL DEFAULT 0,
     status VARCHAR(20) NOT NULL DEFAULT 'active',
     missed_count INTEGER NOT NULL DEFAULT 0,
+    needs_verification BOOLEAN NOT NULL DEFAULT 0,
+    verification_reasons JSON,
     variants JSON,
     value_score INTEGER,
     value_batch_at DATETIME,
@@ -96,6 +99,8 @@ def migrate_schema(session_factory) -> None:
             ("satisfaction", "satisfaction FLOAT DEFAULT 0"),
             ("status", "status VARCHAR(20) DEFAULT 'active'"),
             ("missed_count", "missed_count INTEGER DEFAULT 0"),
+            ("needs_verification", "needs_verification BOOLEAN DEFAULT 0"),
+            ("verification_reasons", "verification_reasons JSON"),
             ("variants", "variants JSON"),
             ("value_score", "value_score INTEGER"),
             ("value_batch_at", "value_batch_at DATETIME"),
@@ -133,6 +138,13 @@ def migrate_schema(session_factory) -> None:
         if "listings" in existing_tables:
             session.execute(
                 text("UPDATE listings SET status='not_seen_recently' WHERE status='gone'")
+            )
+            session.execute(
+                text(
+                    "UPDATE listings SET needs_verification=1, "
+                    "verification_reasons='[\"升级后尚未重新核验\"]' "
+                    "WHERE verification_reasons IS NULL"
+                )
             )
         if "notifications" in existing_tables:
             session.execute(

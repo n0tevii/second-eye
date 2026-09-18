@@ -357,6 +357,10 @@ def listings_page(
             query = query.filter(Listing.task_id == task_id_int)
         if show == "active":
             query = query.filter(Listing.status == "active", Listing.blocked.is_(False))
+        elif show == "verification":
+            query = query.filter(
+                Listing.needs_verification.is_(True), Listing.blocked.is_(False)
+            )
         elif show in ("not_seen", "gone"):
             query = query.filter(Listing.status == "not_seen_recently")
         elif show == "blocked":
@@ -437,6 +441,10 @@ def listings_more(
             query = query.filter(Listing.task_id == task_id_int)
         if show == "active":
             query = query.filter(Listing.status == "active", Listing.blocked.is_(False))
+        elif show == "verification":
+            query = query.filter(
+                Listing.needs_verification.is_(True), Listing.blocked.is_(False)
+            )
         elif show in ("not_seen", "gone"):
             query = query.filter(Listing.status == "not_seen_recently")
         elif show == "blocked":
@@ -808,6 +816,10 @@ def api_list_listings(
             query = query.filter(Listing.task_id == task_id_int)
         if show == "active":
             query = query.filter(Listing.status == "active", Listing.blocked.is_(False))
+        elif show == "verification":
+            query = query.filter(
+                Listing.needs_verification.is_(True), Listing.blocked.is_(False)
+            )
         elif show in ("not_seen", "gone"):
             query = query.filter(Listing.status == "not_seen_recently")
         elif show == "blocked":
@@ -832,6 +844,8 @@ def api_list_listings(
             "image_urls": row.image_urls,
             "condition_score": row.condition_score,
             "condition_detail": row.condition_detail,
+            "needs_verification": row.needs_verification,
+            "verification_reasons": row.verification_reasons,
             "notified_at": row.notified_at.isoformat() if row.notified_at else None,
         }
         for row in rows

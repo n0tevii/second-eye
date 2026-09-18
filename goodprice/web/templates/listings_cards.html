@@ -8,6 +8,7 @@
   <a href="/listings/{{ item.id }}" class="font-semibold text-base leading-snug hover:text-blue-600">{{ item.title }}</a>
   <div class="mt-2 flex items-center gap-2 flex-wrap">
     <span class="text-xl font-bold text-red-600">¥{{ item.price }}</span>
+    {% if item.needs_verification %}<span class="px-2 py-0.5 rounded text-xs bg-orange-100 text-orange-700">待核验</span>{% endif %}
     {% if item.status == 'not_seen_recently' %}<span class="px-2 py-0.5 rounded text-xs bg-gray-300 text-gray-700">近期未检索到</span>{% endif %}
     {% if item.best_of_batch %}<span class="px-2 py-0.5 rounded text-xs bg-amber-100 text-amber-700">本批最优</span>{% endif %}
     {% if item.condition_score %}
@@ -21,6 +22,9 @@
       <span class="px-2 py-0.5 rounded text-xs {% if lv == '低' %}bg-green-100 text-green-700{% elif lv == '中' %}bg-yellow-100 text-yellow-700{% elif lv == '高' %}bg-red-100 text-red-700{% else %}bg-gray-200 text-gray-600{% endif %}">风险{{ lv }}</span>
     {% endif %}
   </div>
+  {% if item.needs_verification and item.verification_reasons %}
+  <div class="text-sm text-orange-700 mt-1">{{ item.verification_reasons|join('；') }}</div>
+  {% endif %}
   {% if item.condition_detail %}
   <div class="text-sm text-gray-600 mt-1">{{ item.condition_detail.reason }}</div>
   {% endif %}

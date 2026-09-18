@@ -172,6 +172,7 @@ def test_seller_advisory_in_notification_and_cache(session_factory, base_setting
     assert "卖家" in notifier.messages[0].content
     assert "低" in notifier.messages[0].content
     assert "好评率 100%" in notifier.messages[0].content
+    assert "待核验" not in notifier.messages[0].title
     crawl.run_task(task.id)
     assert adapter.seller_calls == 1  # 缓存命中
     with session_factory() as session:
@@ -180,6 +181,8 @@ def test_seller_advisory_in_notification_and_cache(session_factory, base_setting
         assert listing.seller_risk["risk_level"] == "低"
         assert listing.task_id == task.id
         assert listing.satisfaction == 90.0
+        assert listing.needs_verification is False
+        assert listing.verification_reasons == []
 
 
 def test_new_items_notified_after_batch_value_with_best(session_factory, base_settings):
@@ -439,9 +442,12 @@ def test_no_seller_uid_skips_seller_stage(session_factory, base_settings):
     crawl, notifier = _service_with_seller(session_factory, base_settings, adapter)
     crawl.run_task(task.id)
     assert len(notifier.messages) == 1
+    assert notifier.messages[0].title.startswith("[待核验]")
+    assert "卖家信息不全" in notifier.messages[0].content
     with session_factory() as session:
         listing = session.query(Listing).one()
         assert listing.seller_risk is None
+        assert listing.needs_verification is True
 
 
 def test_condition_analysis_retries_once_and_records_error(session_factory, base_settings):
@@ -500,20 +506,24 @@ def test_seller_without_credit_label_still_works(session_factory, base_settings)
         assert listing.seller_risk["risk_level"] == "高"  # 按卖家主页好评 133/194 判定
 
 
-def test_seller_stage_crash_records_last_error(session_factory, base_settings):
+def test_seller_stage_crash_notifies_as_pending_verification(session_factory, base_settings):
     task = TaskService(session_factory).create_task({"keyword": "k"})
     adapter = SellerFakeAdapter([_item()])
-    crawl, _ = _service_with_seller(session_factory, base_settings, adapter)
+    crawl, notifier = _service_with_seller(session_factory, base_settings, adapter)
 
     def boom(platform, seller_uid, nickname=None, credit_label=None, session=None):
         raise RuntimeError("卖家服务崩溃")
 
     crawl.seller_service.ensure_fresh = boom
-    with pytest.raises(RuntimeError, match="卖家服务崩溃"):
-        crawl.run_task(task.id)
+    stats = crawl.run_task(task.id)
+    assert stats["notified"] == 1
+    assert notifier.messages[0].title.startswith("[待核验]")
+    assert "卖家信息不全" in notifier.messages[0].content
     with session_factory() as session:
-        loaded = session.get(type(task), task.id)
-        assert "卖家服务崩溃" in loaded.last_error
+        listing = session.query(Listing).one()
+        assert listing.needs_verification is True
+        assert "卖家信息不全（风险未核实）" in listing.verification_reasons
+        assert listing.seller_risk["risk_level"] == "未知"
 
 
 def test_blocked_listing_and_seller_skipped(session_factory, base_settings):
@@ -656,9 +666,13 @@ def test_requirement_failure_fails_open(session_factory, base_settings):
     crawl, notifier, _ = _service(session_factory, base_settings, adapter=FakeAdapter([_item()]), llm=llm)
     stats = crawl.run_task(task.id)
     assert stats["notified"] == 1
+    assert notifier.messages[0].title.startswith("[待核验]")
+    assert "需求分析失败或结果不完整" in notifier.messages[0].content
     with session_factory() as session:
         listing = session.query(Listing).one()
         assert listing.requirement_match is None
+        assert listing.needs_verification is True
+        assert "需求分析失败或结果不完整" in listing.verification_reasons
 
 
 def test_fetch_detail_off_skips_call(session_factory, base_settings):

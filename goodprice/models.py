@@ -73,6 +73,8 @@ class Listing(Base):
     satisfaction: Mapped[float] = mapped_column(Float, default=0.0)
     status: Mapped[str] = mapped_column(String(20), default="active")
     missed_count: Mapped[int] = mapped_column(Integer, default=0)
+    needs_verification: Mapped[bool] = mapped_column(Boolean, default=False)
+    verification_reasons: Mapped[list] = mapped_column(JSON, default=list)
     variants: Mapped[list] = mapped_column(JSON, default=list)
     value_score: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     value_batch_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)

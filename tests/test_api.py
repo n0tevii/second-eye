@@ -400,6 +400,8 @@ def test_listing_detail_shows_missing_analysis_reasons(base_settings, session_fa
             requirement_match=None,
             requirement_reason="需求分析失败，未过滤（网络错误）",
             condition_detail={"error": "模型超时"},
+            needs_verification=True,
+            verification_reasons=["需求分析失败或结果不完整", "卖家信息不全"],
         )
         session.add(listing)
         session.commit()
@@ -407,6 +409,8 @@ def test_listing_detail_shows_missing_analysis_reasons(base_settings, session_fa
     page = client.get(f"/listings/{listing_id}")
     assert "需求分析失败，未过滤（网络错误）" in page.text
     assert "模型超时" in page.text
+    assert "待核验原因" in page.text
+    assert "卖家信息不全" in page.text
 
 
 def test_reanalyze_runs_in_background(base_settings, session_factory):
@@ -442,6 +446,33 @@ def test_listings_offset_pagination(base_settings, session_factory):
     assert fragment.status_code == 200
     assert "商品0" in fragment.text
     assert 'id="listings-grid"' not in fragment.text
+
+
+def test_listings_pending_verification_filter_and_api_fields(base_settings, session_factory):
+    client = _client(base_settings, session_factory)
+    with session_factory() as session:
+        session.add_all(
+            [
+                Listing(
+                    platform="xianyu", external_id="pending", title="待核验商品",
+                    price=1, url="u", needs_verification=True,
+                    verification_reasons=["卖家信息不全"],
+                ),
+                Listing(
+                    platform="xianyu", external_id="complete", title="已核验商品",
+                    price=2, url="v", needs_verification=False,
+                ),
+            ]
+        )
+        session.commit()
+    rows = client.get("/api/listings?show=verification").json()
+    assert [row["external_id"] for row in rows] == ["pending"]
+    assert rows[0]["needs_verification"] is True
+    assert rows[0]["verification_reasons"] == ["卖家信息不全"]
+    page = client.get("/listings?show=verification")
+    assert "待核验商品" in page.text
+    assert "已核验商品" not in page.text
+    assert "卖家信息不全" in page.text
 
 
 def test_listing_actions_preserve_filters(base_settings, session_factory):
