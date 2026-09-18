@@ -1,6 +1,8 @@
 import re
 import time
 
+import pytest
+
 from datetime import datetime
 
 from fastapi.testclient import TestClient
@@ -50,6 +52,28 @@ def test_settings_never_echoes_secrets_or_allows_caching(base_settings, session_
     assert response.headers["cache-control"].startswith("no-store")
     assert "cdn.tailwindcss.com" not in response.text
     assert "unpkg.com" not in response.text
+
+
+@pytest.mark.parametrize("source", [
+    {},
+    {"Origin": "null"},
+    {"Origin": "https://other.example"},
+    {"Origin": "http://testserver:18001"},
+    {"Origin": "null", "Referer": "http://testserver/settings"},
+    {"Origin": "https://other.example", "Referer": "http://testserver/settings"},
+])
+def test_rejected_settings_posts_do_not_write(base_settings, session_factory, source):
+    app = build_app(settings=base_settings, session_factory=session_factory, with_scheduler=False)
+    original = app.state.settings_service.get().llm_model
+    with TestClient(app, follow_redirects=False) as client:
+        response = client.post(
+            "/settings",
+            auth=(base_settings.admin_username, base_settings.admin_password),
+            headers=source,
+            data={"llm_model": "must-not-be-saved"},
+        )
+        assert response.status_code == 403
+    assert app.state.settings_service.get().llm_model == original
 
 
 def test_pages_render(base_settings, session_factory):

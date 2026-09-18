@@ -1,5 +1,27 @@
 # 群晖 Container Manager 部署与回滚
 
+## v0.2.1 表单保存修复
+
+v0.2.0 的 `Referrer-Policy: no-referrer` 会让浏览器原生表单提交携带
+`Origin: null`，被应用自己的来源校验拒绝。v0.2.1 改为 `same-origin`：
+允许本站表单保留来源信息，访问外站仍不发送 Referer。鉴权与跨站拦截保持启用；
+不要在反向代理中强制设置 Origin 或 Referer 来绕过校验。
+
+反向代理的 Host 必须保留外部端口，例如 `second-eye.example:18001`。
+升级前按下文停止本项目并备份 data、.env 和 Compose；在独立发布目录解压 v0.2.1，
+将 Compose 的构建目录、镜像标签与 APP_VERSION 指向 v0.2.1 后只重建本项目。
+保留现场已验证的监听范围、数据挂载和资源设置，不重新添加 NAS 不支持的 CPU 配额。
+本补丁没有新增数据库迁移。回滚可恢复旧 Compose/镜像；若同时回滚数据，使用与
+旧版本匹配的升级前备份，不删除数据卷。
+
+升级后重新打开设置页，再验证正常保存、刷新后持久化、无认证访问被拒绝及跨站请求被拒绝。
+本地浏览器回归可用 `python -m pytest tests/test_browser_forms.py -q` 运行，需安装
+Playwright Chromium；也可用 `TEST_BROWSER_EXECUTABLE` 指定本机 Chromium 系浏览器，
+测试启动独立临时 profile，不读取日常浏览器登录态。未安装测试浏览器时该测试跳过，
+不能据此声称通过了浏览器验收。
+
+## v0.2.0 基础部署说明
+
 本文对应发布 `v0.2.0`。在 NAS 型号、CPU 架构、DSM / Container Manager 版本、可用内存、卷名、端口和 HTTPS 入口核实前，部署状态为 **NOT_VALIDATED**。
 
 ## 目录与权限

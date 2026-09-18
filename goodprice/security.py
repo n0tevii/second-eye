@@ -86,7 +86,9 @@ class AdminSecurityMiddleware:
                     [
                         (b"cache-control", b"no-store, max-age=0"),
                         (b"pragma", b"no-cache"),
-                        (b"referrer-policy", b"no-referrer"),
+                        # Native form POSTs use Origin: null under no-referrer.
+                        # Keep same-origin writes usable without leaking to other sites.
+                        (b"referrer-policy", b"same-origin"),
                         (b"x-content-type-options", b"nosniff"),
                         (b"x-frame-options", b"DENY"),
                         (
