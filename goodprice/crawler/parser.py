@@ -1,4 +1,5 @@
 import re
+from decimal import Decimal
 from typing import Optional
 from urllib.parse import urljoin
 
@@ -8,14 +9,15 @@ from goodprice.crawler import selectors as sel
 from goodprice.crawler.base import ListingData, ListingDetail, SellerData
 
 BASE_URL = "https://www.goofish.com"
-_PRICE_RE = re.compile(r"(\d+(?:[,_，]\d{3})*(?:\.\d+)?)")
+_PRICE_RE = re.compile(r"(\d+(?:[,_，]\d{3})*(?:\.\d+)?)\s*(万)?")
 
 
 def parse_price(text: str) -> float:
     match = _PRICE_RE.search(text or "")
     if not match:
         raise ValueError(f"无法解析价格: {text!r}")
-    return float(match.group(1).replace(",", "").replace("_", "").replace("，", ""))
+    amount = Decimal(match.group(1).replace(",", "").replace("_", "").replace("，", ""))
+    return float(amount * (10000 if match.group(2) else 1))
 
 
 def extract_id(href: str) -> Optional[str]:
@@ -52,8 +54,12 @@ def parse_search_html(html: str, card_selector: str = sel.RESULT_CARD) -> list[L
         if not title:
             continue
         price_el = card.select_one(sel.PRICE)
+        unit_el = card.select_one(sel.PRICE_UNIT)
+        unit = unit_el.get_text(strip=True) if unit_el else ""
+        if unit not in ("", "万"):
+            continue  # Unknown magnitude must not silently become a yuan price.
         try:
-            price = parse_price(price_el.get_text() if price_el else "")
+            price = parse_price(price_el.get_text() + unit if price_el else "")
         except ValueError:
             continue
         img_el = card.select_one(sel.IMAGE)

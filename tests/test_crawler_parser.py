@@ -25,6 +25,39 @@ def test_parse_price():
         parse_price("面议")
 
 
+@pytest.mark.parametrize("text, expected", [
+    ("¥1.06万", 10600.0),
+    ("¥6.18 万", 61800.0),
+    ("¥1.02万元", 10200.0),
+    ("¥0.0001万", 1.0),
+])
+def test_parse_price_wan(text, expected):
+    assert parse_price(text) == expected
+
+
+@pytest.mark.parametrize("unit, expected", [("万", 10600.0), ("", 1.06), ("亿", None)])
+def test_search_price_unit_is_a_sibling_of_number(unit, expected):
+    # 2026-09-19 live DOM: magnitude is outside price-wrap; discount is separate.
+    html = f"""
+    <div data-spm="searchFeedList">
+      <a href="/item?id=1">
+        <span class="main-title--test">Mac Studio</span>
+        <div class="row3-wrap-price--IZmX7M0K">
+          <div class="price-wrap--YzmU5cUl"><span>¥</span><span>1</span><span>.06</span></div>
+          <span class="magnitude--EJxoo1DV">{unit}</span>
+          <div class="price-desc--test">累计降价1万元</div>
+        </div>
+      </a>
+    </div>
+    """
+    items = parse_search_html(html)
+    if expected is None:
+        assert items == []
+        return
+    assert len(items) == 1
+    assert items[0].price == expected
+
+
 def test_extract_id():
     assert extract_id("https://www.goofish.com/item?id=1001") == "1001"
     assert extract_id("https://www.goofish.com/item/abc123?x=1") == "abc123"

@@ -205,6 +205,30 @@ def test_new_items_notified_after_batch_value_with_best(session_factory, base_se
     assert "本批最优" in contents
 
 
+@pytest.mark.parametrize("max_price, accepted", [(10000, False), (20000, True)])
+def test_wan_price_filter_persistence_and_dedup(session_factory, base_settings, max_price, accepted):
+    from goodprice.crawler.parser import parse_search_html
+
+    items = parse_search_html("""
+        <div data-spm="searchFeedList"><a href="/item?id=1">
+          <span class="main-title--test">Mac Studio</span>
+          <div class="price-wrap--test">¥1.06</div><span class="magnitude--test">万</span>
+        </a></div>
+    """)
+    task = TaskService(session_factory).create_task({"keyword": "Mac Studio", "max_price": max_price})
+    crawl, notifier, _ = _service(session_factory, base_settings, adapter=FakeAdapter(items))
+    crawl.run_task(task.id)
+    crawl.run_task(task.id)
+    with session_factory() as session:
+        if accepted:
+            assert session.query(Listing).one().price == 10600.0
+            assert len(notifier.messages) == 1
+            assert "10600" in notifier.messages[0].content
+        else:
+            assert session.query(Listing).count() == 0
+            assert notifier.messages == []
+
+
 def test_price_change_reevaluates_and_renotifies_on_improvement(session_factory, base_settings):
     task = TaskService(session_factory).create_task({"keyword": "k", "condition_requirement": "屏幕完好"})
     crawl, notifier, _ = _service(session_factory, base_settings, adapter=FakeAdapter([_item(price=100.0)]))
