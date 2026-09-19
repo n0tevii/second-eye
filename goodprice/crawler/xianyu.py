@@ -1,5 +1,5 @@
 from typing import Callable, Optional
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 from playwright.sync_api import sync_playwright
 
@@ -98,6 +98,21 @@ class XianyuAdapter:
                 browser.close()
 
     def fetch_detail(self, url: str) -> ListingDetail:
+        needs_validation = False
+
+        def check_detail_response(response):
+            nonlocal needs_validation
+            if not urlsplit(response.url).path.startswith("/h5/mtop.taobao.idle.pc.detail/"):
+                return
+            try:
+                codes = {value.split("::", 1)[0] for value in response.json().get("ret", [])}
+            except (ValueError, TypeError, AttributeError):
+                return
+            if codes & {"FAIL_SYS_USER_VALIDATE", "RGV587_ERROR"}:
+                needs_validation = True
+            elif "SUCCESS" in codes:
+                needs_validation = False
+
         with self._playwright_factory() as playwright:
             browser = playwright.chromium.launch(
                 headless=self.headless,
@@ -112,6 +127,7 @@ class XianyuAdapter:
                     ]
                 )
                 page = context.new_page()
+                page.on("response", check_detail_response)
                 page.goto(url, wait_until="domcontentloaded", timeout=45000)
                 if "login" in (page.url or ""):
                     raise CrawlerAuthError("闲鱼 Cookie 已失效或未登录，请重新获取")
@@ -119,6 +135,8 @@ class XianyuAdapter:
                     page.wait_for_selector(sel.DETAIL_DESC, timeout=30000)
                 except Exception:
                     pass  # 描述缺失时仍解析
+                if needs_validation:
+                    raise CrawlerAuthError("闲鱼详情访问需要验证，请在抓取环境中完成验证后再试")
                 return parse_detail_html(page.content())
             finally:
                 browser.close()

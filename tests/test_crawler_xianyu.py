@@ -20,6 +20,7 @@ class FakePage:
         body_text="",
         fallback_count=0,
         htmls=None,
+        responses=None,
     ):
         self._html = html
         self._htmls = htmls or [html]
@@ -30,10 +31,19 @@ class FakePage:
         self._fallback_count = fallback_count
         self.wait_calls = 0
         self._goto_count = 0
+        self._responses = responses or []
+        self._response_handler = None
+
+    def on(self, event, handler):
+        if event == "response":
+            self._response_handler = handler
 
     def goto(self, *args, **kwargs):
         self._idx = min(self._goto_count, len(self._htmls) - 1)
         self._goto_count += 1
+        for response in self._responses:
+            if self._response_handler:
+                self._response_handler(response)
 
     def wait_for_selector(self, *args, **kwargs):
         if not self._wait_ok:
@@ -80,13 +90,14 @@ class FakeBrowser:
     def __init__(self, page):
         self._page = page
         self.context = None
+        self.closed = False
 
     def new_context(self, **kwargs):
         self.context = FakeContext(self._page)
         return self.context
 
     def close(self):
-        pass
+        self.closed = True
 
 
 class FakeChromium:
@@ -191,3 +202,39 @@ def test_fetch_seller_parses_page():
     data = adapter.fetch_seller("2672367114")
     assert data.positive_count == 133
     assert data.total_count == 194
+
+
+class FakeResponse:
+    def __init__(self, codes, path="mtop.taobao.idle.pc.detail", malformed=False):
+        self.url = f"https://h5api.m.goofish.com/h5/{path}/1.0/?secret=not-for-logs"
+        self.codes = codes
+        self.malformed = malformed
+
+    def json(self):
+        if self.malformed:
+            raise ValueError("invalid JSON")
+        return {"ret": self.codes}
+
+
+@pytest.mark.parametrize("wait_ok", [True, False])
+def test_detail_validation_response_rejects_placeholder_and_closes_browser(wait_ok):
+    response = FakeResponse(["FAIL_SYS_USER_VALIDATE::private diagnostic", "RGV587_ERROR"])
+    page = FakePage('<span class="desc--placeholder">请完成验证</span>',
+                    responses=[response], wait_ok=wait_ok)
+    adapter, playwright = _adapter(page)
+    with pytest.raises(CrawlerAuthError, match="需要验证") as error:
+        adapter.fetch_detail("https://www.goofish.com/item?id=1001")
+    assert "private diagnostic" not in str(error.value)
+    assert "not-for-logs" not in str(error.value)
+    assert playwright.browser.closed
+
+
+@pytest.mark.parametrize("responses", [
+    [FakeResponse(["FAIL_SYS_USER_VALIDATE"], path="unrelated.recommendations")],
+    [FakeResponse(["FAIL_SYS_USER_VALIDATE"]), FakeResponse(["SUCCESS::OK"])],
+    [FakeResponse([], malformed=True)],
+])
+def test_detail_validation_does_not_mask_successful_item(responses):
+    page = FakePage(DETAIL_FIXTURE.read_text(encoding="utf-8"), responses=responses)
+    adapter, _ = _adapter(page)
+    assert "屏幕完好" in adapter.fetch_detail("https://www.goofish.com/item?id=1001").description
