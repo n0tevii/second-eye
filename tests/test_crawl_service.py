@@ -900,6 +900,37 @@ def test_task_disabled_during_model_call_does_not_continue_pipeline(
     assert notifier.messages == []
 
 
+@pytest.mark.parametrize("stop_after", [1, 2])
+def test_disabled_during_detail_persists_verification_state(
+    session_factory, base_settings, stop_after
+):
+    service = TaskService(session_factory)
+    task = service.create_task({"keyword": "Mac Studio", "condition_requirement": "128GB/2TB"})
+
+    class DisablingAdapter(FakeAdapter):
+        def fetch_detail(self, url):
+            self.fetch_calls.append(url)
+            if len(self.fetch_calls) == stop_after:
+                service.toggle_task(task.id)
+            raise ValueError("闲鱼详情页加载失败：网络错误页面")
+
+    adapter = DisablingAdapter([_item("1"), _item("2")])
+    crawl, notifier, _ = _service(session_factory, base_settings, adapter=adapter)
+    assert crawl.run_task(task.id)["skipped"] == "disabled"
+    assert len(adapter.fetch_calls) == stop_after
+    assert notifier.messages == []
+    with session_factory() as session:
+        listings = session.query(Listing).all()
+        assert len(listings) == stop_after
+        for listing in listings:
+            assert listing.description is None
+            assert listing.requirement_match is None
+            assert listing.needs_verification
+            assert "商品详情缺失，配置及卖家信息待核验" in listing.verification_reasons
+            assert listing.notified_at is None
+        assert session.query(Notification).count() == 0
+
+
 def test_failed_external_delivery_retries_and_only_then_marks_notified(
     session_factory, base_settings
 ):

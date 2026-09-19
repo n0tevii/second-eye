@@ -263,6 +263,10 @@ class CrawlService:
                         stats["notified"] += 1
                 session.commit()
             except TaskDisabled:
+                # A paused batch never reaches the notification stage, where
+                # verification flags are normally finalized. Persist them now.
+                for interrupted in session.query(Listing).filter(Listing.id.in_(seen_ids)):
+                    self._update_verification_state(interrupted, task)
                 session.commit()
                 raise
             except Exception as exc:
