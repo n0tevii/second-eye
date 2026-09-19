@@ -4,8 +4,19 @@
 首次配置完成后，在 DSM 任务计划程序手动运行一次升级任务。
 固定版本和 sha256 digest 由每次已批准的发布指定，不追踪 latest，不定时自动升级。
 
-当前状态：脚本通过本地模拟 Docker 的检查；未在 NAS 执行，Linux 镜像构建及
-实际升级/回滚仍为 NOT_VALIDATED。GitHub 连接缺少 workflow scope，工作流尚未上传。
+当前状态（2026-09-20）：升级工具通过 14 项本地检查；v0.2.4 amd64 镜像通过
+266 项 Linux 回归测试及容器运行检查，已发布，匿名读取镜像清单成功。
+升级工具未在 NAS 执行，实际升级/回滚及闲鱼/手机业务验收仍为 NOT_VALIDATED。
+
+已验证的镜像：
+
+```text
+ghcr.io/n0tevii/second-eye@sha256:f1f018c2a2c6422657bc2cb969e7269c07fca5dcba0cbba886f64d7035fe12c6
+```
+
+源码提交：c9e4f4b28fce9f77d822f35ce8005648b742b36b。
+构建证据：https://github.com/n0tevii/second-eye/actions/runs/35464270398 。
+压缩镜像层合计 632149606 字节；NAS 需要另计解压、旧镜像和 data 备份空间。
 
 ## 发布流程
 
@@ -15,8 +26,8 @@
 不覆盖已有版本 tag。release 附件记录最终 image digest 和构建清单。
 应用镜像没有测试依赖、运行数据库、Cookie 或 .env。
 
-上传工作流需要当前 GitHub 连接获准增加 workflow scope。首次 GHCR 包还需要核实
-可见性及 NAS 拉取权限；不能以 Actions 成功代替匿名拉取验证。
+GitHub workflow 授权及上传已完成。发布后的匿名清单访问返回 HTTP 200，digest
+与发布附件一致。NAS 自身到 GHCR 的下载连通性仍需现场验证。
 
 ## 首次安装前必须核对
 
