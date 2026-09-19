@@ -1,6 +1,7 @@
 {% extends "base.html" %}
-{% block title %}命中列表 - 闲鱼盯价助手{% endblock %}
+{% block title %}收录列表 - 闲鱼盯价助手{% endblock %}
 {% block content %}
+<p class="text-sm text-gray-600 mb-3">这里展示已收录商品，包含不匹配及待核验记录。收录数量不代表符合需求的数量。</p>
 <form method="get" action="/listings" class="flex items-center gap-3 mb-4">
   <select name="task_id" class="border rounded px-3 py-2" onchange="this.form.submit()">
     <option value="">全部任务</option>

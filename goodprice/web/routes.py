@@ -258,6 +258,17 @@ def task_detail_page(request: Request, task_id: int):
                 session.query(Notification).filter(Notification.task_id == task_id).count()
             ),
         }
+        match_counts = dict(
+            session.query(Listing.requirement_match, func.count(Listing.id))
+            .filter(Listing.task_id == task_id)
+            .group_by(Listing.requirement_match)
+            .all()
+        )
+        stats.update(
+            matched=match_counts.get(True, 0),
+            mismatched=match_counts.get(False, 0),
+            unknown=match_counts.get(None, 0),
+        )
         recent = (
             session.query(Listing)
             .filter(Listing.task_id == task_id)

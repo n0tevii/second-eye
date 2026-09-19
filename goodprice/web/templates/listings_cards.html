@@ -8,6 +8,7 @@
   <a href="/listings/{{ item.id }}" class="font-semibold text-base leading-snug hover:text-blue-600">{{ item.title }}</a>
   <div class="mt-2 flex items-center gap-2 flex-wrap">
     <span class="text-xl font-bold text-red-600">¥{{ item.price }}</span>
+    <span class="text-xs">{{ '需求匹配' if item.requirement_match is sameas true else ('不匹配' if item.requirement_match is sameas false else '需求待核验') }}</span>
     {% if item.needs_verification %}<span class="px-2 py-0.5 rounded text-xs bg-orange-100 text-orange-700">待核验</span>{% endif %}
     {% if item.status == 'not_seen_recently' %}<span class="px-2 py-0.5 rounded text-xs bg-gray-300 text-gray-700">近期未检索到</span>{% endif %}
     {% if item.best_of_batch %}<span class="px-2 py-0.5 rounded text-xs bg-amber-100 text-amber-700">本批最优</span>{% endif %}
@@ -42,5 +43,5 @@
   </div>
 </div>
 {% else %}
-<div class="text-gray-500 col-span-full">还没有命中商品。</div>
+<div class="text-gray-500 col-span-full">还没有收录商品。</div>
 {% endfor %}

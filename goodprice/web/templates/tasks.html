@@ -3,7 +3,7 @@
 {% block content %}
 {% if just_ran %}
 <div class="bg-green-100 text-green-800 rounded shadow px-4 py-3 mb-6">
-  已开始执行任务 #{{ just_ran }}，页面将自动刷新显示进度；完成后可查看「上次运行」与「命中列表」。
+  已开始执行任务 #{{ just_ran }}，页面将自动刷新显示进度；完成后可查看「上次运行」与「收录列表」。
 </div>
 {% endif %}
 <div id="progress-area">{% include "progress.html" %}</div>
@@ -66,7 +66,7 @@
       {{ '启用' if task.enabled else '停用' }}
     </span>
     <a href="/tasks/{{ task.id }}/edit" class="btn btn-sm btn-outline">编辑</a>
-    <a href="/listings?task_id={{ task.id }}" class="btn btn-sm btn-outline">命中</a>
+    <a href="/listings?task_id={{ task.id }}" class="btn btn-sm btn-outline">收录</a>
     <form method="post" action="/tasks/{{ task.id }}/toggle" class="inline"><button class="btn btn-sm btn-outline">{{ '停用' if task.enabled else '启用' }}</button></form>
     <form method="post" action="/tasks/{{ task.id }}/run" class="inline">
       {% if task.id in running_ids %}<button disabled class="btn btn-sm btn-outline opacity-50">执行中...</button>

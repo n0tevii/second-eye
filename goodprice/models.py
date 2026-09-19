@@ -65,6 +65,7 @@ class Listing(Base):
     notified_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     requirement_match: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    requirement_input_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     requirement_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     seller_uid: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     seller_name: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)

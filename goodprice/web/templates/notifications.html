@@ -15,7 +15,7 @@
         <tr class="border-b">
           <td class="p-2"><input type="checkbox" class="row-check" name="ids" value="{{ n.id }}"></td>
           <td class="p-2">{{ n.channel }}</td>
-          <td class="p-2">{{ {'accepted': '服务端已接受', 'logged': '本地日志', 'failed': '失败'}[n.status] if n.status in ('accepted', 'logged', 'failed') else n.status }}</td>
+          <td class="p-2">{{ {'accepted': '服务端已接受', 'logged': '本地日志', 'failed': '失败', 'superseded': '旧结论已作废，不再补发'}[n.status] if n.status in ('accepted', 'logged', 'failed', 'superseded') else n.status }}</td>
           <td class="p-2">
             {% if listing %}<a href="{{ listing.url }}" target="_blank" class="hover:text-blue-600">{{ n.title }}</a>
             {% else %}{{ n.title }}{% endif %}

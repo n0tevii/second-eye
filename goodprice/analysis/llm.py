@@ -55,8 +55,8 @@ def parse_analysis_json(raw: str) -> dict[str, Any]:
 def parse_requirement_json(raw: str) -> dict[str, Any]:
     data = _extract_json(raw)
     matched = data.get("matched")
-    if not isinstance(matched, bool):
-        raise ValueError(f"需求判断输出缺少布尔 matched: {raw!r}")
+    if "matched" not in data or (matched is not None and not isinstance(matched, bool)):
+        raise ValueError(f"需求判断输出缺少布尔或 null matched: {raw!r}")
     return {"matched": matched, "reason": str(data.get("reason", ""))[:500]}
 
 

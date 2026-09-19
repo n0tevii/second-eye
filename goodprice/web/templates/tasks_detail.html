@@ -10,7 +10,7 @@
 </div>
 
 <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
-  <div class="bg-white rounded shadow p-3"><div class="text-sm text-gray-500">命中商品</div><div class="text-xl font-bold">{{ stats.listings }}</div></div>
+  <div class="bg-white rounded shadow p-3"><div class="text-sm text-gray-500">收录商品</div><div class="text-xl font-bold">{{ stats.listings }}</div><div class="text-xs text-gray-500">需求匹配 {{ stats.matched }} · 不匹配 {{ stats.mismatched }} · 未核验 {{ stats.unknown }}</div></div>
   <div class="bg-white rounded shadow p-3"><div class="text-sm text-gray-500">通知记录</div><div class="text-xl font-bold">{{ stats.notifications }}</div></div>
   <div class="bg-white rounded shadow p-3"><div class="text-sm text-gray-500">运行次数</div><div class="text-xl font-bold">{{ task.last_run_count }}</div></div>
   <div class="bg-white rounded shadow p-3"><div class="text-sm text-gray-500">上次运行</div><div class="text-xl font-bold">{{ task.last_run_at.strftime('%m-%d %H:%M') if task.last_run_at else '—' }}</div></div>
@@ -65,19 +65,20 @@
 
 <div class="bg-white rounded shadow p-4">
   <div class="flex items-center justify-between mb-3">
-    <h3 class="font-semibold">最近命中</h3>
+    <h3 class="font-semibold">最近收录（含不匹配及待核验商品）</h3>
     <a href="/listings?task_id={{ task.id }}" class="text-blue-600 text-sm">查看全部 →</a>
   </div>
   <ul class="divide-y">
     {% for item in recent %}
     <li class="py-2 flex items-center gap-3 text-sm">
       <a href="/listings/{{ item.id }}" class="flex-1 truncate hover:text-blue-600">{{ item.title }}</a>
+      <span class="text-sm">{{ '需求匹配' if item.requirement_match is sameas true else ('不匹配' if item.requirement_match is sameas false else '需求待核验') }}</span>
       <span class="text-red-600 font-medium">¥{{ item.price }}</span>
       {% if item.status == 'not_seen_recently' %}<span class="px-1.5 py-0.5 rounded text-xs bg-gray-300 text-gray-700">近期未检索到</span>{% endif %}
       <span class="px-1.5 py-0.5 rounded text-xs bg-purple-100 text-purple-700">分 {{ item.satisfaction|round(1) }}</span>
     </li>
     {% else %}
-    <li class="py-2 text-gray-500">还没有命中商品。</li>
+    <li class="py-2 text-gray-500">还没有收录商品。</li>
     {% endfor %}
   </ul>
 </div>

@@ -9,7 +9,7 @@ _LISTINGS_COLUMNS = (
     "notified_at, description, requirement_match, requirement_reason, seller_uid, "
     "seller_name, seller_risk, blocked, satisfaction, status, missed_count, variants, "
     "value_score, value_batch_at, best_of_batch, last_notified_satisfaction, task_id, "
-    "needs_verification, verification_reasons"
+    "needs_verification, verification_reasons, requirement_input_hash"
 )
 
 _LISTINGS_DDL = """
@@ -31,6 +31,7 @@ _LISTINGS_DDL = """
     description TEXT,
     requirement_match BOOLEAN,
     requirement_reason TEXT,
+    requirement_input_hash VARCHAR(64),
     seller_uid VARCHAR(100),
     seller_name VARCHAR(200),
     seller_risk JSON,
@@ -92,6 +93,7 @@ def migrate_schema(session_factory) -> None:
             ("description", "description TEXT"),
             ("requirement_match", "requirement_match BOOLEAN"),
             ("requirement_reason", "requirement_reason TEXT"),
+            ("requirement_input_hash", "requirement_input_hash VARCHAR(64)"),
             ("seller_uid", "seller_uid TEXT"),
             ("seller_name", "seller_name TEXT"),
             ("seller_risk", "seller_risk JSON"),
@@ -119,6 +121,7 @@ def migrate_schema(session_factory) -> None:
             ("attempt", "attempt INTEGER DEFAULT 1"),
         ],
     }
+    invalidate_requirements = False
     with session_factory() as session:
         existing_tables = {
             row[0]
@@ -133,8 +136,18 @@ def migrate_schema(session_factory) -> None:
             for col, ddl in cols:
                 if col not in existing:
                     session.execute(text(f"ALTER TABLE {table} ADD COLUMN {ddl}"))
+                    if table == "listings" and col == "requirement_input_hash":
+                        invalidate_requirements = True
         if "listings" in existing_tables and _listing_unique_columns(session) != _NEW_LISTING_UNIQUE:
             _rebuild_listings(session)
+        if invalidate_requirements:
+            session.execute(text(
+                "UPDATE listings SET requirement_match=NULL, requirement_input_hash=NULL, "
+                "requirement_reason='升级后需求结论待重新核验', "
+                "condition_score=NULL, condition_detail=NULL, value_score=NULL, "
+                "value_batch_at=NULL, best_of_batch=0, satisfaction=0, "
+                "needs_verification=1, verification_reasons='[\"升级后需求结论待重新核验\"]'"
+            ))
         if "listings" in existing_tables:
             session.execute(
                 text("UPDATE listings SET status='not_seen_recently' WHERE status='gone'")
@@ -147,6 +160,8 @@ def migrate_schema(session_factory) -> None:
                 )
             )
         if "notifications" in existing_tables:
+            if invalidate_requirements:
+                session.execute(text("UPDATE notifications SET status='superseded' WHERE status='failed'"))
             session.execute(
                 text(
                     "UPDATE notifications "

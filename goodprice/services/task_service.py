@@ -1,6 +1,6 @@
 from typing import Optional
 
-from goodprice.models import WatchTask
+from goodprice.models import Listing, Notification, WatchTask
 
 
 class TaskService:
@@ -62,6 +62,7 @@ class TaskService:
             task = session.get(WatchTask, task_id)
             if not task:
                 return None
+            old_requirement = (task.condition_requirement or "").strip()
             if data.get("keyword"):
                 task.keyword = data["keyword"].strip()
             if "name" in data:
@@ -82,6 +83,22 @@ class TaskService:
                 task.fetch_detail = bool(data.get("fetch_detail"))
             if "enabled" in data:
                 task.enabled = bool(data.get("enabled"))
+            if old_requirement != (task.condition_requirement or "").strip():
+                for listing in session.query(Listing).filter_by(task_id=task_id):
+                    listing.requirement_match = None
+                    listing.requirement_input_hash = None
+                    listing.requirement_reason = "需求已修改，等待重新核验"
+                    listing.condition_score = None
+                    listing.condition_detail = None
+                    listing.value_score = None
+                    listing.value_batch_at = None
+                    listing.best_of_batch = False
+                    listing.satisfaction = 0
+                    listing.needs_verification = True
+                    listing.verification_reasons = ["需求已修改，等待重新核验"]
+                session.query(Notification).filter_by(task_id=task_id, status="failed").update(
+                    {"status": "superseded"}, synchronize_session=False
+                )
             session.commit()
             session.refresh(task)
             return task

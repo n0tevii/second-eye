@@ -144,4 +144,35 @@ def test_migrate_rebuilds_listings_for_per_task_unique(tmp_db):
                 "FROM listings WHERE id=1"
             )
         ).one()
-        assert migrated == (1, '["升级后尚未重新核验"]')
+        assert migrated == (1, '["升级后需求结论待重新核验"]')
+
+
+def test_requirement_migration_invalidates_once_and_preserves_history(session_factory):
+    from goodprice.models import Listing, Notification, PriceSnapshot
+    with session_factory() as session:
+        item = Listing(platform='xianyu', external_id='legacy', title='128GB+1TB', price=31000,
+                       url='', requirement_match=True, satisfaction=75)
+        session.add(item)
+        session.flush()
+        session.add_all([
+            PriceSnapshot(listing_id=item.id, price=31000),
+            Notification(listing_id=item.id, channel='test', status='accepted'),
+            Notification(listing_id=item.id, channel='other', status='failed'),
+        ])
+        session.commit()
+        session.execute(text('ALTER TABLE listings DROP COLUMN requirement_input_hash'))
+        session.commit()
+    migrate_schema(session_factory)
+    with session_factory() as session:
+        item = session.query(Listing).one()
+        assert item.requirement_match is None and item.needs_verification
+        assert session.query(PriceSnapshot).count() == 1
+        assert [n.status for n in session.query(Notification).order_by(Notification.id)] == ['accepted', 'superseded']
+        item.requirement_match = False
+        item.requirement_input_hash = 'new-analysis'
+        session.commit()
+    migrate_schema(session_factory)
+    with session_factory() as session:
+        item = session.query(Listing).one()
+        assert item.requirement_match is False
+        assert item.requirement_input_hash == 'new-analysis'

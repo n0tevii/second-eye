@@ -6,6 +6,7 @@ import time
 from datetime import datetime
 from typing import Any, Optional
 
+from goodprice.analysis.capacity import check_capacity_requirements, requirement_input_hash
 from goodprice.crawler.base import ListingData
 from goodprice.crawler.parser import is_product_image
 from goodprice.models import Listing, Notification, PriceSnapshot, WatchTask
@@ -24,6 +25,10 @@ MAX_NOTIFICATION_ATTEMPTS = 3
 
 
 class TaskDisabled(RuntimeError):
+    pass
+
+
+class TaskRequirementsChanged(RuntimeError):
     pass
 
 
@@ -77,6 +82,9 @@ class CrawlService:
             return {"found": 0, "new": 0, "notified": 0, "skipped": "already_running"}
         try:
             return self._run_impl(task_id)
+        except TaskRequirementsChanged:
+            logger.info("任务 %s 需求已修改，停止本轮旧需求处理", task_id)
+            return {"found": 0, "new": 0, "notified": 0, "skipped": "requirements_changed"}
         except TaskDisabled:
             logger.info("任务 %s 已停用，在下一检查点停止", task_id)
             return {"found": 0, "new": 0, "notified": 0, "skipped": "disabled"}
@@ -153,12 +161,14 @@ class CrawlService:
                     listing, is_new = self._upsert_listing(session, task, data)
                     seen_ids.add(listing.id)
                     if self._is_blocked(session, listing):
+                        self._assert_requirements_current(task)
                         session.commit()
                         continue
                     listing.status = "active"
                     listing.missed_count = 0
                     # Do not hold SQLite's write lock across browser/model/network calls;
                     # task toggles must remain able to persist while a run is active.
+                    self._assert_requirements_current(task)
                     session.commit()
                     if is_new:
                         stats["new"] += 1
@@ -168,19 +178,23 @@ class CrawlService:
                             self._fetch_detail(session, listing)
                             self._assert_enabled(task_id)
                         if self._is_blocked(session, listing):
+                            self._assert_requirements_current(task)
                             session.commit()
                             continue
                         if not self._requirement_pass(session, listing, task):
                             logger.info("任务 %s 需求不匹配，不收录：%s", task_id, listing.title[:30])
+                            self._assert_requirements_current(task)
                             session.commit()
                             continue
                         self._condition_analysis(session, listing, task)
                         if self._condition_gate_fails(task, listing):
                             logger.info("任务 %s 品相分低于门槛，不收录：%s", task_id, listing.title[:30])
+                            self._assert_requirements_current(task)
                             session.commit()
                             continue
                         self._seller_check(session, listing, task)
                         if self._is_blocked(session, listing):
+                            self._assert_requirements_current(task)
                             session.commit()
                             continue
                         batch_rows.append(
@@ -193,14 +207,17 @@ class CrawlService:
                             stats["reevaluated"] += 1
                             logger.info("任务 %s 重评 %s：%s（价格变化或重新上架）", task_id, data.external_id, data.title[:30])
                             if not self._requirement_pass(session, listing, task):
+                                self._assert_requirements_current(task)
                                 session.commit()
                                 continue
                             self._condition_analysis(session, listing, task)
                             if self._condition_gate_fails(task, listing):
+                                self._assert_requirements_current(task)
                                 session.commit()
                                 continue
                             self._seller_check(session, listing, task)
                             if self._is_blocked(session, listing):
+                                self._assert_requirements_current(task)
                                 session.commit()
                                 continue
                             batch_rows.append(
@@ -211,10 +228,12 @@ class CrawlService:
                             if self._backfill(session, listing, task):
                                 stats["backfilled"] += 1
                             if self._is_blocked(session, listing) or listing.requirement_match is False:
+                                self._assert_requirements_current(task)
                                 session.commit()
                                 continue
                             if self._retry_failed_notifications(session, task, listing):
                                 stats["notified"] += 1
+                    self._assert_requirements_current(task)
                     session.commit()
                 # 搜索结果有覆盖上限；这里只记录“近期未检索到”，不推断真实下架。
                 for other in (
@@ -230,16 +249,19 @@ class CrawlService:
                         other.status = "not_seen_recently"
                         stats["not_seen_recently"] += 1
                         logger.info("任务 %s 商品 %s 标记为近期未检索到", task_id, other.title[:30])
+                self._assert_requirements_current(task)
                 session.commit()
                 # 批性价比：本批通过筛选的商品统一横向对比
                 if batch_rows and self._value_client() is not None:
                     self._assert_enabled(task_id)
                     self._batch_value(session, batch_rows)
+                    self._assert_requirements_current(task)
                     session.commit()
                 # 通知：新品在批性价比后统一发出；重评仅满意度提高时发出
                 for task, listing, old_price, is_renotify in pending:
                     self._assert_enabled(task_id)
                     if self._is_blocked(session, listing):
+                        self._assert_requirements_current(task)
                         session.commit()
                         continue
                     self._update_verification_state(listing, task)
@@ -261,7 +283,11 @@ class CrawlService:
                     )
                     if accepted:
                         stats["notified"] += 1
+                self._assert_requirements_current(task)
                 session.commit()
+            except TaskRequirementsChanged:
+                session.rollback()
+                raise
             except TaskDisabled:
                 # A paused batch never reaches the notification stage, where
                 # verification flags are normally finalized. Persist them now.
@@ -389,6 +415,7 @@ class CrawlService:
                 self._batch_value(
                     session, [self._batch_row(listing, task.condition_requirement or "")]
                 )
+            self._assert_requirements_current(task)
             self._update_verification_state(listing, task)
             listing.satisfaction = self._satisfaction(listing)
             session.commit()
@@ -435,32 +462,53 @@ class CrawlService:
         raw["nickname"] = listing.seller_name or (seller.nickname if seller else None)
         listing.seller_risk = raw
 
+    def _assert_requirements_current(self, task: WatchTask) -> None:
+        self._assert_enabled(task.id)
+        if task.id is None:
+            return
+        with self._session_factory() as session:
+            current = session.get(WatchTask, task.id)
+            if current is None:
+                raise TaskDisabled()
+            if (current.condition_requirement or "").strip() != (task.condition_requirement or "").strip():
+                raise TaskRequirementsChanged()
+
     def _requirement_pass(self, session, listing: Listing, task: WatchTask) -> bool:
+        self._assert_requirements_current(task)
         requirement = (task.condition_requirement or "").strip()
+        listing.requirement_match = None
+        listing.requirement_reason = "未配置需求或文本模型，待核验"
+        listing.requirement_input_hash = requirement_input_hash(
+            listing.title, listing.description or "", requirement
+        )
+        capacity = check_capacity_requirements(listing.title, listing.description or "", requirement)
+        # A definite capacity failure blocks even when detail/model is unavailable.
+        # Unknown capacity cannot be promoted to a match by the model.
+        if capacity is not None and capacity["matched"] is not True:
+            listing.requirement_match = capacity["matched"]
+            listing.requirement_reason = capacity["reason"]
+            return capacity["matched"] is not False
         if task.fetch_detail and not listing.description:
-            listing.requirement_match = None
             listing.requirement_reason = "商品详情缺失，需求待核验"
             return True
         if not requirement or not self.llm.enabled:
             return True
         try:
-            self._assert_enabled(task.id)
             verdict = self.llm.analyze_requirement(
                 title=listing.title,
                 description=listing.description or "",
                 requirement=requirement,
             )
-            self._assert_enabled(task.id)
-        except TaskDisabled:
+            self._assert_requirements_current(task)
+        except (TaskDisabled, TaskRequirementsChanged):
             raise
         except Exception as exc:
             logger.warning("需求分析失败，不拦截: %s", redact_secrets(exc))
-            listing.requirement_match = None
             listing.requirement_reason = f"需求分析失败，未过滤（{redact_secrets(exc)}）"[:500]
             return True
         listing.requirement_match = verdict["matched"]
         listing.requirement_reason = verdict["reason"]
-        return bool(verdict["matched"])
+        return verdict["matched"] is not False
 
     def _condition_analysis(self, session, listing: Listing, task: WatchTask) -> None:
         if not self.vision.enabled:
@@ -584,10 +632,18 @@ class CrawlService:
             self._assert_enabled(task.id)
             if self._is_blocked(session, listing):
                 return False
-        if requirement and self.llm.enabled and listing.requirement_match is None:
+        expected_hash = requirement_input_hash(listing.title, listing.description or "", requirement)
+        stale = listing.requirement_input_hash != expected_hash
+        if stale:
+            listing.condition_score = None
+            listing.condition_detail = None
+            listing.value_score = None
+            listing.value_batch_at = None
+            listing.best_of_batch = False
+        if stale or (requirement and self.llm.enabled and listing.requirement_match is None):
             self._requirement_pass(session, listing, task)
             changed = listing.requirement_match is not None
-        if self.vision.enabled and listing.condition_score is None:
+        if listing.requirement_match is not False and self.vision.enabled and listing.condition_score is None:
             try:
                 self._assert_enabled(task.id)
                 verdict = self.vision.analyze_condition(
@@ -605,7 +661,9 @@ class CrawlService:
                 raise
             except Exception as exc:
                 logger.warning("回填品相分析失败: %s", redact_secrets(exc))
+        self._assert_requirements_current(task)
         self._update_verification_state(listing, task)
+        listing.satisfaction = self._satisfaction(listing)
         return changed
 
     def _update_verification_state(self, listing: Listing, task: WatchTask) -> None:
@@ -620,6 +678,8 @@ class CrawlService:
                 if not self.llm.enabled
                 else "需求分析失败或结果不完整"
             )
+            if listing.requirement_reason:
+                reasons.append(listing.requirement_reason)
         condition_error = ""
         if isinstance(listing.condition_detail, dict):
             condition_error = listing.condition_detail.get("error") or ""
@@ -727,7 +787,7 @@ class CrawlService:
         for channel, notifier in self.notifiers:
             if channels is not None and channel not in channels:
                 continue
-            self._assert_enabled(task.id)
+            self._assert_requirements_current(task)
             accepted = (
                 session.query(Notification)
                 .filter_by(
@@ -753,6 +813,10 @@ class CrawlService:
             if channel != "log" and failed_count >= MAX_NOTIFICATION_ATTEMPTS:
                 continue
             attempt = failed_count + 1
+            # Persist analysis before releasing control to an external notifier.
+            # A concurrent task edit can then invalidate it without being overwritten.
+            self._assert_requirements_current(task)
+            session.commit()
             try:
                 notifier.send(message)
                 status = "logged" if channel == "log" else "accepted"
@@ -792,7 +856,20 @@ class CrawlService:
                         content=message.content,
                     )
                 )
+            with self._session_factory() as current_session:
+                current = current_session.get(WatchTask, task.id) if task.id is not None else task
+                changed = current is None or (current.condition_requirement or "").strip() != (task.condition_requirement or "").strip()
+            if changed:
+                for row in session.new:
+                    if isinstance(row, Notification) and row.status == "failed":
+                        row.status = "superseded"
             session.commit()
+            if changed:
+                if accepted_any:
+                    listing.notified_at = datetime.now()
+                    listing.last_notified_satisfaction = satisfaction
+                    session.commit()
+                raise TaskRequirementsChanged()
         if accepted_any:
             listing.notified_at = datetime.now()
             listing.last_notified_satisfaction = satisfaction

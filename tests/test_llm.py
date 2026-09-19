@@ -263,3 +263,9 @@ def test_vision_no_text_fallback_when_disabled():
     with pytest.raises(httpx.HTTPStatusError):
         client.analyze_condition("t", 1, image_urls=["https://x/1.jpg"])
     assert len(calls) == 1  # 视觉强依赖：不做纯文本降级
+
+
+def test_requirement_accepts_explicit_unknown_but_not_missing_field():
+    assert parse_requirement_json('{"matched":null,"reason":"配置冲突"}')['matched'] is None
+    with pytest.raises(ValueError):
+        parse_requirement_json('{"reason":"缺少判断"}')

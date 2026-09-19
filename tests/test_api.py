@@ -742,3 +742,21 @@ def _settings_form():
         "wecom_robot_enabled": "1",
         "vision_enabled": "1",
     }
+
+
+def test_collection_page_distinguishes_collected_and_matched(base_settings, session_factory):
+    client = _client(base_settings, session_factory)
+    task = client.app.state.task_service.create_task({'keyword': 'Mac Studio'})
+    with session_factory() as session:
+        for index, matched in enumerate([True, False, None]):
+            session.add(Listing(platform='xianyu', external_id=str(index), task_id=task.id,
+                                title=f'configuration-{index}', price=1, url='', requirement_match=matched))
+        session.commit()
+    response = client.get(f'/tasks/{task.id}')
+    assert response.status_code == 200
+    assert '收录商品' in response.text
+    assert '含不匹配及待核验商品' in response.text
+    assert '需求匹配' in response.text and '不匹配' in response.text and '需求待核验' in response.text
+    assert '需求匹配 1 · 不匹配 1 · 未核验 1' in response.text
+    assert '命中商品' not in response.text
+    assert '收录数量不代表符合需求的数量' in client.get('/listings').text

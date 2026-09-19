@@ -691,7 +691,7 @@ def test_requirement_failure_fails_open(session_factory, base_settings):
     stats = crawl.run_task(task.id)
     assert stats["notified"] == 1
     assert notifier.messages[0].title.startswith("[待核验]")
-    assert "需求分析失败或结果不完整" in notifier.messages[0].content
+    assert "需求分析失败" in notifier.messages[0].content
     with session_factory() as session:
         listing = session.query(Listing).one()
         assert listing.requirement_match is None
@@ -776,7 +776,7 @@ def test_recovered_detail_checks_filters_before_retry(session_factory, base_sett
         def fetch_detail(self, url):
             if not self.recovered:
                 raise ValueError("详情页加载失败")
-            return ListingDetail(description="Mac Studio", seller_uid="blocked-seller")
+            return ListingDetail(description="Mac Studio 内存64GB", seller_uid="blocked-seller")
 
     class FailedNotifier(FakeNotifier):
         def send(self, message):
@@ -1061,3 +1061,115 @@ def test_adapter_error_records_last_error(session_factory, base_settings):
     with session_factory() as session:
         loaded = session.get(type(task), task.id)
         assert "Cookie 失效" in loaded.last_error
+
+
+@pytest.mark.parametrize(('title', 'matched', 'sends'), [
+    ('Mac Studio m4max 128+1T', False, 0),
+    ('Mac Studio 64GB+2TB', False, 0),
+    ('Mac Studio 128GB+2TB', True, 1),
+    ('Mac Studio 内存128GB', None, 1),
+    ('Mac Studio 128GB+2TB或64GB+1TB', None, 1),
+])
+def test_capacity_gate_overrides_optimistic_model(session_factory, base_settings, title, matched, sends):
+    task = TaskService(session_factory).create_task({
+        'keyword': 'Mac Studio',
+        'condition_requirement': '内存（统一内存）至少128GB，内置SSD容量至少2TB',
+    })
+    item = _item()
+    item.title = title
+    llm = FakeLLM(verdict={'matched': True, 'reason': '都满足'})
+    crawl, notifier, _ = _service(session_factory, base_settings, adapter=FakeAdapter([item]), llm=llm)
+    crawl.run_task(task.id)
+    crawl.run_task(task.id)
+    with session_factory() as session:
+        listing = session.query(Listing).one()
+        assert listing.requirement_match is matched
+        assert listing.requirement_input_hash
+        if matched is None:
+            assert listing.needs_verification
+            assert '待核验' in notifier.messages[0].title
+    assert len(notifier.messages) == sends
+    if matched is not True:
+        assert llm.calls == []
+
+
+def test_requirement_edit_reevaluates_same_price_without_duplicate_send(session_factory, base_settings):
+    service = TaskService(session_factory)
+    task = service.create_task({'keyword': 'Mac Studio', 'condition_requirement': '内存至少128GB，SSD至少1TB'})
+    item = _item()
+    item.title = 'Mac Studio 128GB+1TB'
+    crawl, notifier, _ = _service(session_factory, base_settings, adapter=FakeAdapter([item]))
+    crawl.run_task(task.id)
+    assert len(notifier.messages) == 1
+    service.update_task(task.id, {'condition_requirement': '内存至少128GB，SSD至少2TB'})
+    crawl.run_task(task.id)
+    with session_factory() as session:
+        assert session.query(Listing).one().requirement_match is False
+        assert session.query(Notification).count() == 1
+    assert len(notifier.messages) == 1
+
+
+def test_legacy_positive_without_input_hash_is_rechecked(session_factory, base_settings):
+    task = TaskService(session_factory).create_task({'keyword': 'Mac Studio', 'condition_requirement': '内存至少128GB，SSD至少2TB'})
+    item = _item()
+    item.title = 'Mac Studio 128GB+1TB'
+    with session_factory() as session:
+        session.add(Listing(platform='xianyu', external_id=item.external_id, task_id=task.id,
+                            title=item.title, price=item.price, url=item.url, description='购入价5.4折',
+                            requirement_match=True, satisfaction=75))
+        session.commit()
+    crawl, notifier, _ = _service(session_factory, base_settings, adapter=FakeAdapter([item]))
+    crawl.run_task(task.id)
+    with session_factory() as session:
+        assert session.query(Listing).one().requirement_match is False
+    assert notifier.messages == []
+
+
+def test_requirement_edit_during_model_discards_old_response(session_factory, base_settings):
+    service = TaskService(session_factory)
+    task = service.create_task({'keyword': 'k', 'condition_requirement': '旧要求'})
+    class EditingLLM(FakeLLM):
+        def analyze_requirement(self, **kwargs):
+            service.update_task(task.id, {'condition_requirement': '新要求'})
+            return {'matched': True, 'reason': '旧要求满足'}
+    crawl, notifier, _ = _service(session_factory, base_settings,
+                                  adapter=FakeAdapter([_item()]), llm=EditingLLM())
+    result = crawl.run_task(task.id)
+    assert result['skipped'] == 'requirements_changed'
+    with session_factory() as session:
+        listing = session.query(Listing).one()
+        assert listing.requirement_match is None
+        assert listing.needs_verification
+        assert listing.requirement_reason == '需求已修改，等待重新核验'
+    assert notifier.messages == []
+
+
+def test_model_unknown_keeps_plan_a_notification(session_factory, base_settings):
+    task = TaskService(session_factory).create_task({'keyword': 'k', 'condition_requirement': '屏幕无划痕'})
+    crawl, notifier, _ = _service(session_factory, base_settings, adapter=FakeAdapter([_item()]),
+                                  llm=FakeLLM(verdict={'matched': None, 'reason': '无法确定'}))
+    crawl.run_task(task.id)
+    with session_factory() as session:
+        assert session.query(Listing).one().requirement_match is None
+    assert len(notifier.messages) == 1
+    assert '待核验' in notifier.messages[0].title
+
+
+@pytest.mark.parametrize('failed', [False, True])
+def test_requirement_edit_during_send_preserves_outcome_and_stops_old_channels(session_factory, base_settings, failed):
+    service = TaskService(session_factory)
+    task = service.create_task({'keyword': 'k', 'condition_requirement': '旧要求'})
+    class EditingNotifier(FakeNotifier):
+        def send(self, message):
+            super().send(message)
+            service.update_task(task.id, {'condition_requirement': '新要求'})
+            if failed:
+                raise RuntimeError('offline')
+    first, second = EditingNotifier(), FakeNotifier()
+    crawl, _, _ = _service(session_factory, base_settings, adapter=FakeAdapter([_item()]))
+    crawl.notifiers = [('first', first), ('second', second)]
+    assert crawl.run_task(task.id)['skipped'] == 'requirements_changed'
+    assert len(first.messages) == 1 and second.messages == []
+    with session_factory() as session:
+        assert session.query(Listing).one().requirement_match is None
+        assert session.query(Notification).one().status == ('superseded' if failed else 'accepted')
