@@ -84,6 +84,13 @@ def parse_search_html(html: str, card_selector: str = sel.RESULT_CARD) -> list[L
 
 def parse_detail_html(html: str) -> ListingDetail:
     soup = BeautifulSoup(html, "html.parser")
+    # The site's network-error page also contains a desc-- element and
+    # recommendation cards; neither is evidence about the requested item.
+    if any(
+        el.get_text(strip=True).startswith("网络不见了")
+        for el in soup.select("[class*='title--']")
+    ):
+        raise ValueError("闲鱼详情页加载失败：网络错误页面")
     variants: list[dict] = []
     range_el = soup.select_one(sel.DETAIL_PRICE_RANGE)
     if range_el:

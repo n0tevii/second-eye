@@ -126,6 +126,15 @@ def test_parse_detail_html():
     assert detail.variants == []
 
 
+def test_detail_network_error_is_not_a_product_description():
+    # Live failure DOM on 2026-09-19; recommendations may still be present.
+    html = '''<div class="title--MexO3QLn">网络不见了 &gt;ω&lt;</div>
+    <div class="desc--gzrM2VaE">快停止散发魅力，我的网都被卡掉了</div>
+    <a href="/item?id=other">为你推荐</a>'''
+    with pytest.raises(ValueError, match="详情页加载失败"):
+        parse_detail_html(html)
+
+
 def test_parse_detail_html_price_range_as_variants():
     detail = parse_detail_html(VARIANT_FIXTURE.read_text(encoding="utf-8"))
     assert detail.variants == [

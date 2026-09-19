@@ -719,6 +719,94 @@ def test_fetch_detail_failure_falls_back(session_factory, base_settings):
     assert stats["notified"] == 1
 
 
+@pytest.mark.parametrize("failure", ["error", "empty"])
+def test_missing_detail_stays_unverified_until_recovered(session_factory, base_settings, failure):
+    from goodprice.crawler.base import ListingDetail
+
+    task = TaskService(session_factory).create_task(
+        {"keyword": "Mac Studio", "condition_requirement": "内存至少128GB，SSD至少2TB"}
+    )
+
+    class DetailAdapter(FakeAdapter):
+        recovered = False
+
+        def fetch_detail(self, url):
+            if self.recovered:
+                return ListingDetail(description="Mac Studio 512GB 内存，8TB SSD")
+            if failure == "error":
+                raise ValueError("详情页加载失败")
+            return ListingDetail()
+
+    adapter = DetailAdapter([_item()])
+    llm = FakeLLM(verdict={"matched": False, "reason": "模型根据缺失信息误判"})
+    crawl, notifier, _ = _service(session_factory, base_settings, adapter=adapter, llm=llm)
+    for _ in range(2):
+        crawl.run_task(task.id)
+        with session_factory() as session:
+            listing = session.query(Listing).one()
+            assert listing.requirement_match is None
+            assert listing.needs_verification
+            assert any("详情" in reason for reason in listing.verification_reasons)
+    assert llm.calls == []
+    assert len(notifier.messages) == 1
+    assert "待核验" in notifier.messages[0].title
+
+    adapter.recovered = True
+    llm.verdict = {"matched": True, "reason": "512GB / 8TB满足要求"}
+    crawl.run_task(task.id)
+    with session_factory() as session:
+        listing = session.query(Listing).one()
+        assert listing.requirement_match is True
+        assert "8TB" in listing.description
+        assert not any("详情" in reason for reason in listing.verification_reasons)
+    assert len(notifier.messages) == 1
+
+
+@pytest.mark.parametrize("rejection", ["blocked_seller", "requirement"])
+def test_recovered_detail_checks_filters_before_retry(session_factory, base_settings, rejection):
+    from goodprice.crawler.base import ListingDetail
+
+    task = TaskService(session_factory).create_task(
+        {"keyword": "Mac Studio", "condition_requirement": "内存至少128GB"}
+    )
+
+    class RecoveringAdapter(FakeAdapter):
+        recovered = False
+
+        def fetch_detail(self, url):
+            if not self.recovered:
+                raise ValueError("详情页加载失败")
+            return ListingDetail(description="Mac Studio", seller_uid="blocked-seller")
+
+    class FailedNotifier(FakeNotifier):
+        def send(self, message):
+            super().send(message)
+            raise RuntimeError("offline")
+
+    adapter = RecoveringAdapter([_item()])
+    notifier = FailedNotifier()
+    llm = FakeLLM(verdict={"matched": False, "reason": "详情确认内存不足"})
+    crawl, _, _ = _service(
+        session_factory, base_settings, adapter=adapter, notifier=notifier, llm=llm
+    )
+    crawl.run_task(task.id)
+    with session_factory() as session:
+        session.add(Seller(
+            platform="xianyu", seller_uid="blocked-seller", blocked=rejection == "blocked_seller"
+        ))
+        session.commit()
+    adapter.recovered = True
+    crawl.run_task(task.id)
+    assert len(notifier.messages) == 1
+    with session_factory() as session:
+        listing = session.query(Listing).one()
+        if rejection == "blocked_seller":
+            assert listing.blocked
+        else:
+            assert listing.requirement_match is False
+        assert session.query(Notification).count() == 1
+
+
 def test_backfill_fills_missing_analysis_without_renotify(session_factory, base_settings):
     task = TaskService(session_factory).create_task({"keyword": "k"})
     crawl, notifier, _ = _service(

@@ -210,6 +210,9 @@ class CrawlService:
                         else:
                             if self._backfill(session, listing, task):
                                 stats["backfilled"] += 1
+                            if self._is_blocked(session, listing) or listing.requirement_match is False:
+                                session.commit()
+                                continue
                             if self._retry_failed_notifications(session, task, listing):
                                 stats["notified"] += 1
                     session.commit()
@@ -341,7 +344,7 @@ class CrawlService:
         try:
             detail = self.adapter.fetch_detail(listing.url)
         except Exception as exc:
-            logger.warning("详情抓取失败，退回标题判断: %s", redact_secrets(exc))
+            logger.warning("详情抓取失败，保留待核验: %s", redact_secrets(exc))
             return
         if detail.description:
             listing.description = detail.description
@@ -430,6 +433,10 @@ class CrawlService:
 
     def _requirement_pass(self, session, listing: Listing, task: WatchTask) -> bool:
         requirement = (task.condition_requirement or "").strip()
+        if task.fetch_detail and not listing.description:
+            listing.requirement_match = None
+            listing.requirement_reason = "商品详情缺失，需求待核验"
+            return True
         if not requirement or not self.llm.enabled:
             return True
         try:
@@ -567,22 +574,15 @@ class CrawlService:
     def _backfill(self, session, listing: Listing, task: WatchTask) -> bool:
         changed = False
         requirement = (task.condition_requirement or "").strip()
+        if task.fetch_detail and not listing.description:
+            self._assert_enabled(task.id)
+            self._fetch_detail(session, listing)
+            self._assert_enabled(task.id)
+            if self._is_blocked(session, listing):
+                return False
         if requirement and self.llm.enabled and listing.requirement_match is None:
-            try:
-                self._assert_enabled(task.id)
-                verdict = self.llm.analyze_requirement(
-                    title=listing.title,
-                    description=listing.description or "",
-                    requirement=requirement,
-                )
-                self._assert_enabled(task.id)
-                listing.requirement_match = verdict["matched"]
-                listing.requirement_reason = verdict["reason"]
-                changed = True
-            except TaskDisabled:
-                raise
-            except Exception as exc:
-                logger.warning("回填需求分析失败: %s", redact_secrets(exc))
+            self._requirement_pass(session, listing, task)
+            changed = listing.requirement_match is not None
         if self.vision.enabled and listing.condition_score is None:
             try:
                 self._assert_enabled(task.id)
@@ -607,6 +607,8 @@ class CrawlService:
     def _update_verification_state(self, listing: Listing, task: WatchTask) -> None:
         """记录筛选依据中缺失的部分；缺失不会阻止方案 A 的提醒。"""
         reasons: list[str] = []
+        if task.fetch_detail and not listing.description:
+            reasons.append("商品详情缺失，配置及卖家信息待核验")
         requirement = (task.condition_requirement or "").strip()
         if requirement and listing.requirement_match is None:
             reasons.append(
