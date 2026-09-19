@@ -6,8 +6,6 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-ARG APP_VERSION=dev
-
 ARG HTTP_PROXY
 ARG HTTPS_PROXY
 
@@ -30,6 +28,9 @@ RUN pip install --no-cache-dir --no-deps .
 
 RUN mkdir -p /app/data
 
+# Declare release metadata after dependency installation so a version bump
+# does not invalidate the pip/Chromium/system-package build cache.
+ARG APP_VERSION=dev
 ENV APP_VERSION=${APP_VERSION}
 
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
